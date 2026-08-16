@@ -29,7 +29,7 @@
             "provider": {"enum": ["NONE", "STRIPE_PAYMENT_LINK"]},
             "setup_mode": {"enum": ["NONE", "SELF_SETUP", "ASSISTED_SETUP"]},
             "payment_link_url": {"type": "string", "maxLength": 2048},
-            "binding_verification": {"enum": ["NOT_REQUIRED", "CREATOR_ATTESTED", "ASSISTED_PENDING", "MANUAL_REVIEW_REQUIRED", "STRIPE_VERIFIED"]},
+            "binding_verification": {"enum": ["NOT_REQUIRED", "CREATOR_ATTESTED", "ASSISTED_PENDING", "MANUAL_REVIEW_REQUIRED", "OPERATOR_REVIEWED", "STRIPE_VERIFIED"]},
             "fulfillment": {"enum": ["NONE", "MANUAL_HANDOFF", "WEBHOOK_ENTITLEMENT"]},
             "entitlement_verification": {"enum": ["NOT_REQUIRED", "NOT_IMPLEMENTED", "STRIPE_VERIFIED"]}
           },
