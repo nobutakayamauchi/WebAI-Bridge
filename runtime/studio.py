@@ -47,6 +47,7 @@ class StudioDraft(BaseModel):
     included_runs: int = Field(default=0, ge=0, le=1_000_000)
     checkout_setup_mode: CheckoutSetupMode = "SELF_SETUP"
     stripe_payment_link_url: str = Field(default="", max_length=2048)
+    stripe_link_matches_configuration: bool = False
 
     allowed_payer_modes: list[PayerMode] = Field(default_factory=lambda: ["BYOK"])
     default_payer_mode: PayerMode = "BYOK"
@@ -64,6 +65,7 @@ class StudioDraft(BaseModel):
 
     max_input_chars: int = Field(default=12_000, ge=1, le=1_000_000)
     max_history_messages: int = Field(default=12, ge=0, le=1000)
+    max_history_chars: int = Field(default=48_000, ge=0, le=1_000_000)
     max_output_tokens: int = Field(default=2048, ge=1, le=1_000_000)
 
     @field_validator("allowed_payer_modes", "allowed_models")
@@ -85,11 +87,28 @@ def is_https_url(value: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
+def charge_basis_for(mode: AccessMode) -> str:
+    return {
+        "FREE": "FREE",
+        "ALLOWANCE_THEN_PAID": "UNSPECIFIED_AFTER_ALLOWANCE",
+        "PAID": "UNSPECIFIED_PAID",
+        "BUY_ONCE": "ONE_TIME",
+        "SUBSCRIPTION": "MONTHLY",
+        "PER_USE": "PER_RUN",
+    }[mode]
+
+
 @lru_cache(maxsize=8)
 def _schema_validator(schema_path: str) -> Draft202012Validator:
     schema = json.loads(Path(schema_path).read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
+
+
+def validate_package_document(package: dict, *, schema_path: Path) -> list[str]:
+    validator = _schema_validator(str(schema_path.resolve()))
+    schema_errors = sorted(validator.iter_errors(package), key=lambda item: list(item.path))
+    return [f"Schema: {'/'.join(map(str, err.path)) or '<root>'}: {err.message}" for err in schema_errors]
 
 
 def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) -> dict:
@@ -104,6 +123,7 @@ def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) 
             "seller_activation_required": False,
             "seat_limit": 0,
             "protection_implementation": "AVAILABLE",
+            "runtime_implementation": "AVAILABLE",
             "copy_protection_guarantee": "HOSTED_BOUNDARY",
             "portable_copy_risk_acknowledged": False,
         }
@@ -116,11 +136,12 @@ def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) 
     warnings.append(
         "Portable delivery gives the recipient package contents; copying, inspection, modification, or Safety removal cannot be made impossible."
     )
+    warnings.append(
+        "Portable runtime/ZIP generation is NOT IMPLEMENTED in thin v0; protection levels 1-3 are contract intent only."
+    )
 
     if level == "LEVEL_1_LICENSE_ONLY":
-        warnings.append(
-            "Level 1 relies on license/terms only. Technical copy prevention is NOT GUARANTEED."
-        )
+        warnings.append("Level 1 relies on license/terms only. Technical copy prevention is NOT GUARANTEED.")
         return {
             "mode": "PORTABLE_LICENSE",
             "protection_level": level,
@@ -129,6 +150,7 @@ def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) 
             "seller_activation_required": False,
             "seat_limit": 0,
             "protection_implementation": "AVAILABLE",
+            "runtime_implementation": "NOT_IMPLEMENTED",
             "copy_protection_guarantee": "NOT_GUARANTEED",
             "portable_copy_risk_acknowledged": draft.portable_copy_risk_acknowledged,
         }
@@ -145,6 +167,7 @@ def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) 
             "seller_activation_required": False,
             "seat_limit": 0,
             "protection_implementation": "CONTRACT_ONLY",
+            "runtime_implementation": "NOT_IMPLEMENTED",
             "copy_protection_guarantee": "PLANNED_ENCRYPTION",
             "portable_copy_risk_acknowledged": draft.portable_copy_risk_acknowledged,
         }
@@ -161,11 +184,63 @@ def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) 
             "seller_activation_required": True,
             "seat_limit": draft.portable_seat_limit,
             "protection_implementation": "CONTRACT_ONLY",
+            "runtime_implementation": "NOT_IMPLEMENTED",
             "copy_protection_guarantee": "PLANNED_ENTITLEMENT",
             "portable_copy_risk_acknowledged": draft.portable_copy_risk_acknowledged,
         }
 
     raise AssertionError(f"Unhandled protection level: {level}")
+
+
+def _build_readiness(
+    draft: StudioDraft,
+    *,
+    delivery: dict,
+    checkout: dict,
+    platform_enabled: bool,
+) -> dict:
+    blockers: list[str] = []
+    paid_access = draft.access_mode != "FREE"
+    portable = delivery["mode"] != "HOSTED_ONLY"
+    charge_basis = charge_basis_for(draft.access_mode)
+
+    if portable:
+        blockers.append("PORTABLE_RUNTIME_NOT_IMPLEMENTED")
+        if draft.knowledge_enabled:
+            blockers.append("PORTABLE_KNOWLEDGE_BINDING_NOT_IMPLEMENTED")
+        if platform_enabled:
+            blockers.append("PORTABLE_SERVER_FUNDED_PAYER_NOT_IMPLEMENTED")
+        if delivery["protection_implementation"] != "AVAILABLE":
+            blockers.append("PORTABLE_PROTECTION_NOT_IMPLEMENTED")
+
+    if paid_access and delivery["mode"] == "HOSTED_ONLY":
+        blockers.append("HOSTED_ENTITLEMENT_NOT_IMPLEMENTED")
+
+    if paid_access and checkout["setup_mode"] == "ASSISTED_SETUP" and not checkout["payment_link_url"]:
+        blockers.append("CHECKOUT_SETUP_PENDING")
+
+    if charge_basis in {"UNSPECIFIED_AFTER_ALLOWANCE", "UNSPECIFIED_PAID"}:
+        blockers.append("CHARGE_BASIS_UNSPECIFIED")
+
+    runtime = "DRAFT_REQUIRES_OPERATOR_ACTIVATION"
+    if portable:
+        runtime = "BLOCKED_PORTABLE_RUNTIME_NOT_IMPLEMENTED"
+    elif paid_access:
+        runtime = "BLOCKED_PAID_HOSTED_ENTITLEMENT_NOT_IMPLEMENTED"
+
+    if not paid_access:
+        commercial = "NOT_APPLICABLE"
+    elif blockers:
+        commercial = "BLOCKED"
+    else:
+        commercial = "MANUAL_REVIEW_REQUIRED"
+
+    return {
+        "configuration": "VALIDATED",
+        "runtime": runtime,
+        "commercial": commercial,
+        "blockers": blockers,
+    }
 
 
 def build_package(
@@ -183,11 +258,17 @@ def build_package(
         errors.append("Default payer mode must be included in allowed payer modes.")
 
     platform_enabled = "PLATFORM_CREDIT" in draft.allowed_payer_modes
+    byok_enabled = "BYOK" in draft.allowed_payer_modes
     if platform_enabled:
         if not ENV_NAME_RE.fullmatch(draft.platform_budget_id_env):
             errors.append("Platform credit requires a valid budget environment variable name.")
         if draft.platform_hard_limit_usd <= 0:
             errors.append("Platform credit requires a positive hard limit.")
+
+    if byok_enabled:
+        warnings.append(
+            "Hosted BYOK is ephemeral but proxy-mediated: the provider API key is sent through the WebAI Bridge server for the request and must not be intentionally persisted or logged."
+        )
 
     if draft.knowledge_enabled:
         if not ENV_NAME_RE.fullmatch(draft.knowledge_vector_store_env):
@@ -210,6 +291,10 @@ def build_package(
         if draft.checkout_setup_mode == "SELF_SETUP":
             if not is_https_url(draft.stripe_payment_link_url):
                 errors.append("SELF_SETUP paid access requires a valid HTTPS Stripe Payment Link or custom Stripe checkout URL.")
+            if not draft.stripe_link_matches_configuration:
+                errors.append(
+                    "SELF_SETUP requires creator acknowledgement that the checkout link matches the configured access mode, price, and currency."
+                )
         elif draft.checkout_setup_mode == "ASSISTED_SETUP":
             if draft.stripe_payment_link_url and not is_https_url(draft.stripe_payment_link_url):
                 errors.append("Assisted checkout URL must be a valid HTTPS URL when provided.")
@@ -236,17 +321,32 @@ def build_package(
         "provider": "NONE",
         "setup_mode": "NONE",
         "payment_link_url": "",
+        "binding_verification": "NOT_REQUIRED",
         "fulfillment": "NONE",
         "entitlement_verification": "NOT_REQUIRED",
     }
     if paid_access:
+        if draft.checkout_setup_mode == "SELF_SETUP":
+            binding_verification = "CREATOR_ATTESTED"
+        elif draft.stripe_payment_link_url:
+            binding_verification = "MANUAL_REVIEW_REQUIRED"
+        else:
+            binding_verification = "ASSISTED_PENDING"
         checkout = {
             "provider": "STRIPE_PAYMENT_LINK",
             "setup_mode": draft.checkout_setup_mode,
             "payment_link_url": draft.stripe_payment_link_url,
+            "binding_verification": binding_verification,
             "fulfillment": "MANUAL_HANDOFF",
             "entitlement_verification": "NOT_IMPLEMENTED",
         }
+
+    readiness = _build_readiness(
+        draft,
+        delivery=delivery,
+        checkout=checkout,
+        platform_enabled=platform_enabled,
+    )
 
     package = {
         "id": draft.slug,
@@ -263,6 +363,7 @@ def build_package(
         },
         "access": {
             "mode": draft.access_mode,
+            "charge_basis": charge_basis_for(draft.access_mode),
             "currency": "JPY",
             "price_amount_minor": draft.access_price_jpy,
             "included_runs": draft.included_runs,
@@ -272,6 +373,7 @@ def build_package(
         "billing": {
             "allowed_payer_modes": draft.allowed_payer_modes,
             "default_payer_mode": draft.default_payer_mode,
+            "byok_transport": "SERVER_PROXY_EPHEMERAL" if byok_enabled else "NOT_APPLICABLE",
         },
         "routing": {
             "policy": "cost_aware_v0",
@@ -279,10 +381,17 @@ def build_package(
             "allowed_models": draft.allowed_models,
         },
         "delivery": delivery,
+        "safety": {
+            "hosted_policy": "SERVER_INSTRUCTION_POLICY_V0",
+            "hosted_enforcement": "PROMPT_POLICY_PLUS_PROVIDER_BASELINE",
+            "portable_enforcement": "NOT_GUARANTEED",
+        },
+        "readiness": readiness,
         "ui": {"welcome": draft.welcome or f"{draft.display_name}に質問してください。"},
         "usage": {
             "max_input_chars": draft.max_input_chars,
             "max_history_messages": draft.max_history_messages,
+            "max_history_chars": draft.max_history_chars,
             "max_output_tokens": draft.max_output_tokens,
         },
     }
@@ -294,14 +403,15 @@ def build_package(
             "hard_limit_usd_micros": usd_to_micros(draft.platform_hard_limit_usd),
         }
 
-    validator = _schema_validator(str(schema_path.resolve()))
-    schema_errors = sorted(validator.iter_errors(package), key=lambda item: list(item.path))
+    schema_errors = validate_package_document(package, schema_path=schema_path)
     if schema_errors:
-        formatted = [f"Schema: {'/'.join(map(str, err.path)) or '<root>'}: {err.message}" for err in schema_errors]
-        raise StudioValidationError(formatted, warnings)
+        raise StudioValidationError(schema_errors, warnings)
 
     return {
         "valid": True,
+        "ready_to_run": readiness["runtime"] == "READY",
+        "ready_to_sell": readiness["commercial"] == "READY",
+        "readiness": readiness,
         "package": package,
         "warnings": warnings,
         "exports": {
