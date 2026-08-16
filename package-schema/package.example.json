@@ -41,8 +41,12 @@
   },
   "delivery": {
     "mode": "HOSTED_ONLY",
+    "protection_level": "LEVEL_4_HOSTED_ONLY",
     "portable_protection": "NOT_APPLICABLE",
+    "buyer_passphrase_required": false,
+    "seller_activation_required": false,
     "seat_limit": 0,
+    "protection_implementation": "AVAILABLE",
     "copy_protection_guarantee": "HOSTED_BOUNDARY",
     "portable_copy_risk_acknowledged": false
   },
