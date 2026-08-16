@@ -106,11 +106,11 @@ def _reject_destination_symlink(path: Path, label: str) -> None:
         raise SystemExit(f"{label} destination must not be a symlink")
 
 
-def _stage_text(config_dir: Path, *, prefix: str, content: str, mode: int = 0o600) -> Path:
+def _stage_bytes(config_dir: Path, *, prefix: str, content: bytes, mode: int = 0o600) -> Path:
     fd, name = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=config_dir)
     staged = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        with os.fdopen(fd, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
@@ -121,6 +121,35 @@ def _stage_text(config_dir: Path, *, prefix: str, content: str, mode: int = 0o60
             staged.unlink(missing_ok=True)
         finally:
             raise
+
+
+def _stage_text(config_dir: Path, *, prefix: str, content: str, mode: int = 0o600) -> Path:
+    return _stage_bytes(config_dir, prefix=prefix, content=content.encode("utf-8"), mode=mode)
+
+
+def _restore_instructions(
+    *,
+    config_dir: Path,
+    slug: str,
+    instructions_dest: Path,
+    previous_content: bytes | None,
+    previous_mode: int,
+) -> None:
+    if previous_content is None:
+        instructions_dest.unlink(missing_ok=True)
+        return
+    staged_restore = _stage_bytes(
+        config_dir,
+        prefix=f".{slug}.restore.",
+        content=previous_content,
+        mode=previous_mode,
+    )
+    try:
+        os.replace(staged_restore, instructions_dest)
+        staged_restore = None
+    finally:
+        if staged_restore is not None:
+            staged_restore.unlink(missing_ok=True)
 
 
 def install_package(
@@ -157,6 +186,14 @@ def install_package(
                 f"Destination package already exists with status={existing_status}; pass --replace-nonrunnable only after deliberate review"
             )
 
+    previous_instructions: bytes | None = None
+    previous_instructions_mode = 0o600
+    if instructions_dest.exists():
+        if not instructions_dest.is_file():
+            raise SystemExit("Existing destination Instructions is not a regular file")
+        previous_instructions = instructions_dest.read_bytes()
+        previous_instructions_mode = instructions_dest.stat().st_mode & 0o777
+
     package_text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     staged_instructions = _stage_text(
         config_dir,
@@ -168,6 +205,8 @@ def install_package(
         prefix=f".{slug}.package.",
         content=package_text,
     )
+    instructions_committed = False
+    package_committed = False
 
     try:
         # Authority ordering is intentional: Instructions become available first.
@@ -175,8 +214,10 @@ def install_package(
         # installed config before its referenced Instructions file exists.
         os.replace(staged_instructions, instructions_dest)
         staged_instructions = None
+        instructions_committed = True
         os.replace(staged_package, package_dest)
         staged_package = None
+        package_committed = True
         try:
             dir_fd = os.open(config_dir, os.O_RDONLY)
             try:
@@ -187,6 +228,21 @@ def install_package(
             # Directory fsync is best effort across filesystems/platforms. File
             # contents themselves were already fsynced before atomic replacement.
             pass
+    except Exception:
+        if instructions_committed and not package_committed:
+            try:
+                _restore_instructions(
+                    config_dir=config_dir,
+                    slug=slug,
+                    instructions_dest=instructions_dest,
+                    previous_content=previous_instructions,
+                    previous_mode=previous_instructions_mode,
+                )
+            except Exception as restore_exc:
+                raise RuntimeError(
+                    "Package commit failed and Instructions rollback also failed; operator intervention required"
+                ) from restore_exc
+        raise
     finally:
         if staged_instructions is not None:
             staged_instructions.unlink(missing_ok=True)
