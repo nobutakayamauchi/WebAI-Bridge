@@ -16,6 +16,7 @@ from live_acceptance import Response, normalize_base_url, run_acceptance
 class FakeRequester:
     def __init__(self):
         self.calls = []
+        self.config_override = None
 
     def request(self, method, url, *, headers=None, json_body=None, timeout=30.0):
         headers = dict(headers or {})
@@ -38,11 +39,22 @@ class FakeRequester:
             }, b"<html></html>")
         if url.endswith("/public-config"):
             if headers.get("X-WebAI-Entitlement") == "webai_abcdefghijklmnopqrstuvwxyz123456":
-                return Response(200, {"content-type": "application/json"}, json.dumps({
+                config = self.config_override or {
                     "slug": "paid-ai",
                     "display_name": "Paid AI",
-                    "access": {"mode": "BUY_ONCE"},
-                }).encode())
+                    "status": "active",
+                    "access": {
+                        "mode": "BUY_ONCE",
+                        "commercial_enforcement": "ENTITLEMENT_ENFORCED",
+                    },
+                    "delivery": {
+                        "mode": "HOSTED_ONLY",
+                        "runtime_implementation": "AVAILABLE",
+                    },
+                    "allowed_payer_modes": ["BYOK"],
+                    "default_payer_mode": "BYOK",
+                }
+                return Response(200, {"content-type": "application/json"}, json.dumps(config).encode())
             return Response(401, {"content-type": "application/json"}, json.dumps({"detail": "Valid buyer access token is required"}).encode())
         if url.endswith("/api/chat"):
             if headers.get("X-WebAI-Entitlement") != "webai_abcdefghijklmnopqrstuvwxyz123456":
@@ -73,6 +85,12 @@ def test_perimeter_acceptance_proves_https_headers_and_entitlement_without_provi
     assert result["status"] == "PASS"
     assert result["provider_call"] is False
     assert result["secrets_returned"] is False
+    contract = result["evidence"][-2]
+    assert contract["gate"] == "buyer_entitlement_contract"
+    assert contract["access_mode"] == "BUY_ONCE"
+    assert contract["commercial_enforcement"] == "ENTITLEMENT_ENFORCED"
+    assert contract["delivery_mode"] == "HOSTED_ONLY"
+    assert contract["payer_mode"] == "BYOK"
     assert result["evidence"][-1] == {"gate": "live_provider", "status": "SKIPPED"}
     assert not any(call["url"].endswith("/api/chat") for call in requester.calls)
 
@@ -98,6 +116,39 @@ def test_provider_acceptance_uses_secrets_but_never_returns_them():
     assert len(provider["response_sha256"]) == 64
 
 
+def test_wrong_live_contract_fails_before_provider_call():
+    cases = [
+        {"status": "draft"},
+        {"access": {"mode": "FREE", "commercial_enforcement": "NOT_IMPLEMENTED"}},
+        {"access": {"mode": "BUY_ONCE", "commercial_enforcement": "NOT_IMPLEMENTED"}},
+        {"delivery": {"mode": "PORTABLE_LICENSE", "runtime_implementation": "NOT_IMPLEMENTED"}},
+        {"allowed_payer_modes": ["BYOK", "PLATFORM_CREDIT"]},
+    ]
+    for patch in cases:
+        requester = FakeRequester()
+        config = {
+            "slug": "paid-ai",
+            "display_name": "Paid AI",
+            "status": "active",
+            "access": {"mode": "BUY_ONCE", "commercial_enforcement": "ENTITLEMENT_ENFORCED"},
+            "delivery": {"mode": "HOSTED_ONLY", "runtime_implementation": "AVAILABLE"},
+            "allowed_payer_modes": ["BYOK"],
+            "default_payer_mode": "BYOK",
+        }
+        config.update(patch)
+        requester.config_override = config
+        with pytest.raises(RuntimeError):
+            run_acceptance(
+                requester,
+                base_url="https://ai.example.com",
+                slug="paid-ai",
+                entitlement=token(),
+                provider_call=True,
+                provider_key="provider-secret",
+            )
+        assert not any(call["url"].endswith("/api/chat") for call in requester.calls)
+
+
 def test_remote_http_is_never_allowed_even_with_local_override():
     with pytest.raises(ValueError, match="HTTPS"):
         normalize_base_url("http://ai.example.com", allow_local_http=True)
@@ -109,12 +160,13 @@ def test_local_http_requires_explicit_override():
     assert normalize_base_url("http://127.0.0.1:8080", allow_local_http=True) == "http://127.0.0.1:8080"
 
 
-def test_base_url_rejects_credentials_path_query_and_fragment():
+def test_base_url_rejects_credentials_path_query_fragment_and_invalid_port():
     for value in [
         "https://user:pass@ai.example.com",
         "https://ai.example.com/path",
         "https://ai.example.com?token=x",
         "https://ai.example.com#secret",
+        "https://ai.example.com:notaport",
     ]:
         with pytest.raises(ValueError):
             normalize_base_url(value)
@@ -160,7 +212,7 @@ def test_missing_entitlement_denial_is_required_evidence():
         )
 
 
-def test_live_provider_call_requires_provider_key_before_any_chat_request():
+def test_live_provider_call_requires_provider_key_before_any_http_request():
     requester = FakeRequester()
     with pytest.raises(ValueError, match="provider_key"):
         run_acceptance(
