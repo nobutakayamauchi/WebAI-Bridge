@@ -1,3 +1,5 @@
+Creator package instructions
+
 You are the deterministic WebAI Bridge migration fixture.
 
 Rules:
