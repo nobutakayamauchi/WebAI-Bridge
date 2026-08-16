@@ -39,6 +39,8 @@ def base_payload():
         "access_mode": "FREE",
         "access_price_jpy": 0,
         "included_runs": 0,
+        "checkout_setup_mode": "SELF_SETUP",
+        "stripe_payment_link_url": "",
         "allowed_payer_modes": ["BYOK"],
         "default_payer_mode": "BYOK",
         "platform_budget_id_env": "",
@@ -51,6 +53,16 @@ def base_payload():
         "max_history_messages": 12,
         "max_output_tokens": 2048,
     }
+
+
+def paid_payload(mode="PAID", price=1500):
+    payload = base_payload()
+    payload.update({
+        "access_mode": mode,
+        "access_price_jpy": price,
+        "checkout_setup_mode": "ASSISTED_SETUP",
+    })
+    return payload
 
 
 def test_checked_in_package_configs_match_canonical_schema():
@@ -96,6 +108,8 @@ def test_byok_package_validates_without_runtime_write(studio_client):
     assert package["instructions_file"] == "apps/second-ai.instructions.md"
     assert package["access"]["currency"] == "JPY"
     assert package["access"]["price_amount_minor"] == 0
+    assert package["access"]["checkout"]["provider"] == "NONE"
+    assert package["access"]["checkout"]["entitlement_verification"] == "NOT_REQUIRED"
     assert package["billing"]["allowed_payer_modes"] == ["BYOK"]
     assert "platform_credit" not in package["billing"]
     assert set(appmod.registry.apps) == before
@@ -103,8 +117,7 @@ def test_byok_package_validates_without_runtime_write(studio_client):
 
 def test_paid_access_requires_price_and_remains_independent_of_inference_payer(studio_client):
     _, client = studio_client
-    payload = base_payload()
-    payload["access_mode"] = "PAID"
+    payload = paid_payload(price=0)
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 422
     assert "positive access price" in str(res.json()).lower()
@@ -115,6 +128,7 @@ def test_paid_access_requires_price_and_remains_independent_of_inference_payer(s
     package = res.json()["package"]
     assert package["access"]["price_amount_minor"] == 1500
     assert package["billing"]["allowed_payer_modes"] == ["BYOK"]
+    assert package["access"]["checkout"]["provider"] == "STRIPE_PAYMENT_LINK"
 
 
 def test_free_access_cannot_carry_nonzero_price(studio_client):
@@ -124,6 +138,54 @@ def test_free_access_cannot_carry_nonzero_price(studio_client):
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 422
     assert "zero access price" in str(res.json()).lower()
+
+
+def test_self_setup_requires_https_checkout_url(studio_client):
+    _, client = studio_client
+    payload = paid_payload()
+    payload["checkout_setup_mode"] = "SELF_SETUP"
+    payload["stripe_payment_link_url"] = ""
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "https" in str(res.json()).lower()
+
+    payload["stripe_payment_link_url"] = "http://buy.stripe.com/test"
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+
+    payload["stripe_payment_link_url"] = "https://buy.stripe.com/test"
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 200
+    checkout = res.json()["package"]["access"]["checkout"]
+    assert checkout["setup_mode"] == "SELF_SETUP"
+    assert checkout["payment_link_url"] == "https://buy.stripe.com/test"
+    assert checkout["fulfillment"] == "MANUAL_HANDOFF"
+    assert checkout["entitlement_verification"] == "NOT_IMPLEMENTED"
+
+
+def test_assisted_setup_can_export_pending_link_with_warning(studio_client):
+    _, client = studio_client
+    payload = paid_payload()
+    payload["checkout_setup_mode"] = "ASSISTED_SETUP"
+    payload["stripe_payment_link_url"] = ""
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 200
+    body = res.json()
+    warnings = " ".join(body["warnings"]).lower()
+    assert "pending assisted setup" in warnings
+    assert "does not prove entitlement" in warnings
+    checkout = body["package"]["access"]["checkout"]
+    assert checkout["setup_mode"] == "ASSISTED_SETUP"
+    assert checkout["payment_link_url"] == ""
+
+
+def test_checkout_url_is_not_hardcoded_to_stripe_domain(studio_client):
+    _, client = studio_client
+    payload = paid_payload()
+    payload["checkout_setup_mode"] = "SELF_SETUP"
+    payload["stripe_payment_link_url"] = "https://pay.example.com/product"
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 200
 
 
 def test_empty_payer_and_default_mismatch_fail(studio_client):
@@ -199,9 +261,7 @@ def test_platform_funded_knowledge_requires_cost_reserve(studio_client):
 
 def test_allowance_requires_positive_free_runs(studio_client):
     _, client = studio_client
-    payload = base_payload()
-    payload["access_mode"] = "ALLOWANCE_THEN_PAID"
-    payload["access_price_jpy"] = 500
+    payload = paid_payload(mode="ALLOWANCE_THEN_PAID", price=500)
     payload["included_runs"] = 0
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 422
@@ -210,9 +270,7 @@ def test_allowance_requires_positive_free_runs(studio_client):
 
 def test_paid_and_portable_are_explicit_warnings(studio_client):
     _, client = studio_client
-    payload = base_payload()
-    payload["access_mode"] = "PAID"
-    payload["access_price_jpy"] = 500
+    payload = paid_payload(price=500)
     payload["delivery_mode"] = "HOSTED_AND_PORTABLE"
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 200
