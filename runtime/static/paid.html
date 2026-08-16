@@ -190,7 +190,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (res.status === 401 && String(data.detail || '').includes('BYOK session')) setByokState(false, 0);
+        if ([401, 402].includes(res.status) && String(data.detail || '').includes('BYOK session')) setByokState(false, 0);
         throw new Error(data.detail || 'AIへの接続に失敗しました');
       }
       add('assistant', data.text);
