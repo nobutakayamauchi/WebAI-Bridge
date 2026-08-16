@@ -17,6 +17,25 @@ uvicorn app:app --host 0.0.0.0 --port 8080
 
 Open `/a/migration-fixture-ai`.
 
+## Creator Studio
+
+Creator Studio is deliberately disabled by default. Enable the thin export-only surface with:
+
+```bash
+export WEB_AI_STUDIO_ENABLED=1
+```
+
+Then open `/studio`.
+
+Studio validation:
+
+- uses the canonical `package-schema/package.schema.json`;
+- checks semantic payer/budget/model/Knowledge rules;
+- reads model availability from the current pricing registry;
+- does **not** call the AI provider;
+- does **not** write live package files or mutate the runtime registry;
+- returns package JSON for explicit operator export/deployment.
+
 ## Core invariant
 
 ```text
@@ -38,6 +57,13 @@ V0 payer modes:
 
 Set `knowledge.enabled=true`, supply the server-side vector store through the configured environment variable, and provide an explicit platform tool-cost reserve before using `PLATFORM_CREDIT`.
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
 ## Current limits
 
-No commercial payment enforcement, no purchased wallet, no persistent BYOK secret store, no authentication, no streaming, and no production deployment claim yet.
+No commercial payment enforcement, no purchased wallet, no persistent BYOK secret store, no authentication, no streaming, no Studio server-write/publish authority, and no production deployment claim yet.
