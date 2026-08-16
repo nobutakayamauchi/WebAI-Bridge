@@ -4,13 +4,27 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 import app as core
 from byok_sessions import ByokSessionStore
 from commercial_studio import adapt_manual_hosted_entitlement
-from entitlements import EntitlementStore
+from entitlement_cookies import sign_entitlement_cookie, verify_entitlement_cookie
+from entitlements import (
+    EntitlementStore,
+    PAYMENT_ACTIVE,
+    PAYMENT_EXPIRED,
+    PAYMENT_MISSING,
+    PAYMENT_REVOKED,
+)
+from stripe_checkout import (
+    StripeCheckoutError,
+    retrieve_checkout_session,
+    retrieve_payment_link,
+    validate_paid_checkout_session,
+    validate_payment_link_binding,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 ENTITLEMENT_DB = Path(os.getenv("WEB_AI_ENTITLEMENT_DB", BASE_DIR / ".runtime" / "webai-entitlements.sqlite3"))
@@ -19,6 +33,9 @@ entitlements = EntitlementStore(ENTITLEMENT_DB)
 SUPPORTED_MANUAL_ACCESS = {"BUY_ONCE", "SUBSCRIPTION"}
 BYOK_SESSION_TTL_SECONDS = int(os.getenv("WEB_AI_BYOK_SESSION_TTL_SECONDS", "900"))
 BYOK_SESSION_MAX = int(os.getenv("WEB_AI_BYOK_SESSION_MAX", "1000"))
+ENTITLEMENT_COOKIE_MAX_AGE_SECONDS = int(os.getenv("WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS", "31536000"))
+ENTITLEMENT_COOKIE_SECRET = os.getenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", "")
+STRIPE_SECRET_KEY = os.getenv("WEB_AI_STRIPE_SECRET_KEY", "")
 byok_sessions = ByokSessionStore(ttl_seconds=BYOK_SESSION_TTL_SECONDS, max_sessions=BYOK_SESSION_MAX)
 
 
@@ -40,6 +57,10 @@ def require_secure_transport(request: Request) -> None:
 
 def byok_cookie_name(slug: str) -> str:
     return f"webai_byok_{slug}"
+
+
+def entitlement_cookie_name(slug: str) -> str:
+    return f"webai_access_{slug}"
 
 
 def set_byok_cookie(response: Response, *, slug: str, token: str) -> None:
@@ -64,10 +85,37 @@ def clear_byok_cookie(response: Response, *, slug: str) -> None:
     )
 
 
+def set_entitlement_cookie(response: Response, *, slug: str, payment_ref: str) -> None:
+    if len(ENTITLEMENT_COOKIE_SECRET) < 32:
+        raise HTTPException(status_code=503, detail="Automatic buyer handoff is not configured")
+    cookie = sign_entitlement_cookie(
+        secret=ENTITLEMENT_COOKIE_SECRET,
+        package_id=slug,
+        payment_ref=payment_ref,
+    )
+    response.set_cookie(
+        key=entitlement_cookie_name(slug),
+        value=cookie,
+        max_age=ENTITLEMENT_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=not insecure_http_allowed(),
+        samesite="lax",
+        path="/",
+    )
+
+
+def entitlement_payment_ref(request: Request, *, slug: str) -> str | None:
+    if len(ENTITLEMENT_COOKIE_SECRET) < 32:
+        return None
+    return verify_entitlement_cookie(
+        secret=ENTITLEMENT_COOKIE_SECRET,
+        cookie=request.cookies.get(entitlement_cookie_name(slug)),
+        package_id=slug,
+    )
+
+
 def free_page_response() -> FileResponse:
     response = FileResponse(core.STATIC_DIR / "index.html")
-    # The free dogfood page evolves quickly during real-device testing. Do not let
-    # mobile Safari reuse an older credential UI after a runtime revision changes.
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -105,7 +153,7 @@ def ensure_commercial_hosted_runnable(app_config: dict) -> None:
     if mode == "FREE":
         return
     if mode not in SUPPORTED_MANUAL_ACCESS:
-        raise HTTPException(status_code=503, detail="This paid access mode is not supported by manual hosted entitlement v0")
+        raise HTTPException(status_code=503, detail="This paid access mode is not supported by hosted entitlement v0")
     if access.get("commercial_enforcement") != "ENTITLEMENT_ENFORCED":
         raise HTTPException(status_code=503, detail="Paid hosted entitlement enforcement is not activated")
     billing = app_config.get("billing") or {}
@@ -113,20 +161,25 @@ def ensure_commercial_hosted_runnable(app_config: dict) -> None:
         raise HTTPException(status_code=503, detail="Paid hosted v0 requires BYOK-only inference to avoid unallocated subsidy risk")
 
 
-def require_entitlement(app_config: dict, token: str | None) -> None:
+def require_entitlement(app_config: dict, token: str | None, *, request: Request) -> None:
     ensure_commercial_hosted_runnable(app_config)
     if (app_config.get("access") or {}).get("mode") == "FREE":
         return
-    if not entitlements.authorize(package_id=app_config["slug"], token=(token or "").strip()):
-        raise HTTPException(status_code=401, detail="Valid buyer access token is required")
+    package_id = app_config["slug"]
+    if entitlements.authorize(package_id=package_id, token=(token or "").strip()):
+        return
+    payment_ref = entitlement_payment_ref(request, slug=package_id)
+    if entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
+        return
+    raise HTTPException(status_code=401, detail="Valid buyer access is required")
 
 
-def resolve_byok_package(slug: str, buyer_token: str | None) -> dict:
+def resolve_byok_package(slug: str, buyer_token: str | None, *, request: Request) -> dict:
     try:
         app_config = core.registry.get(slug)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
-    require_entitlement(app_config, buyer_token)
+    require_entitlement(app_config, buyer_token, request=request)
     billing = app_config.get("billing") or {}
     if "BYOK" not in (billing.get("allowed_payer_modes") or []):
         raise HTTPException(status_code=403, detail="BYOK is not allowed for this AI Package")
@@ -134,7 +187,7 @@ def resolve_byok_package(slug: str, buyer_token: str | None) -> dict:
 
 
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.4.0-ephemeral-byok")
+app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.5.0-stripe-auto-handoff")
 
 
 @app.get("/health")
@@ -157,6 +210,8 @@ def creator_studio_options() -> dict:
     options = core.creator_studio_options()
     options["manual_paid_hosted_entitlement"] = "BUY_ONCE_OR_SUBSCRIPTION__HOSTED__BYOK_ONLY"
     options["byok_credential_transport"] = "EPHEMERAL_PROCESS_MEMORY_HTTPONLY_COOKIE"
+    options["buyer_entitlement_transport"] = "SIGNED_HTTPONLY_COOKIE_WITH_LEGACY_BEARER_FALLBACK"
+    options["stripe_auto_handoff"] = "BUY_ONCE_REDIRECT_VERIFICATION_V0"
     return options
 
 
@@ -164,6 +219,63 @@ def creator_studio_options() -> dict:
 def creator_studio_validate(payload: core.StudioDraft, request: Request) -> dict:
     result = core.creator_studio_validate(payload=payload, request=request)
     return adapt_manual_hosted_entitlement(result)
+
+
+@app.get("/checkout/complete/{slug}")
+def checkout_complete(slug: str, session_id: str, request: Request):
+    require_secure_transport(request)
+    try:
+        app_config = core.registry.get(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown app") from None
+    ensure_commercial_hosted_runnable(app_config)
+    if (app_config.get("access") or {}).get("mode") != "BUY_ONCE":
+        raise HTTPException(status_code=503, detail="Automatic Checkout handoff v0 supports BUY_ONCE only")
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Stripe Checkout verification is not configured")
+    if len(ENTITLEMENT_COOKIE_SECRET) < 32:
+        raise HTTPException(status_code=503, detail="Automatic buyer handoff is not configured")
+
+    try:
+        session = retrieve_checkout_session(secret_key=STRIPE_SECRET_KEY, session_id=session_id)
+        verified = validate_paid_checkout_session(session=session, app_config=app_config)
+        payment_link = retrieve_payment_link(
+            secret_key=STRIPE_SECRET_KEY,
+            payment_link_id=verified["payment_link_id"],
+        )
+        validate_payment_link_binding(payment_link=payment_link, app_config=app_config)
+    except StripeCheckoutError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    payment_ref = verified["payment_ref"]
+    package_id = verified["package_id"]
+    state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
+    if state == PAYMENT_MISSING:
+        try:
+            entitlements.issue(
+                package_id=package_id,
+                buyer_ref=verified["buyer_ref"],
+                payment_ref=payment_ref,
+            )
+        except ValueError:
+            state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
+            if state != PAYMENT_ACTIVE:
+                raise HTTPException(status_code=409, detail="Checkout fulfillment could not establish an active entitlement") from None
+    elif state == PAYMENT_ACTIVE:
+        pass
+    elif state in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
+        raise HTTPException(status_code=403, detail="This payment's buyer access is no longer active")
+    else:
+        raise HTTPException(status_code=409, detail="Unknown entitlement lifecycle state")
+
+    if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
+        raise HTTPException(status_code=409, detail="Checkout fulfillment did not establish an active entitlement")
+
+    response = RedirectResponse(url=f"/a/{slug}", status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    set_entitlement_cookie(response, slug=slug, payment_ref=payment_ref)
+    return response
 
 
 @app.get("/apps/{slug}/public-config")
@@ -175,7 +287,7 @@ def paid_public_config(slug: str, request: Request, buyer_token: str | None = He
         raise HTTPException(status_code=404, detail="Unknown app") from None
     if (app_config.get("access") or {}).get("mode") != "FREE":
         require_secure_transport(request)
-    require_entitlement(app_config, buyer_token)
+    require_entitlement(app_config, buyer_token, request=request)
     return core.public_config(app_config)
 
 
@@ -198,7 +310,7 @@ def paid_app_page(slug: str, request: Request):
 def create_byok_session(payload: ByokSessionRequest, request: Request, response: Response, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
     core.enforce_rate_limit(request)
-    resolve_byok_package(payload.slug, buyer_token)
+    resolve_byok_package(payload.slug, buyer_token, request=request)
     try:
         session = byok_sessions.create(package_id=payload.slug, api_key=payload.api_key)
     except (ValueError, RuntimeError) as exc:
@@ -215,7 +327,7 @@ def create_byok_session(payload: ByokSessionRequest, request: Request, response:
 @app.get("/api/byok/session/{slug}")
 def byok_session_status(slug: str, request: Request, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
-    resolve_byok_package(slug, buyer_token)
+    resolve_byok_package(slug, buyer_token, request=request)
     token = request.cookies.get(byok_cookie_name(slug))
     result = byok_sessions.status(package_id=slug, token=token)
     result["storage"] = "PROCESS_MEMORY_ONLY"
@@ -225,7 +337,7 @@ def byok_session_status(slug: str, request: Request, buyer_token: str | None = H
 @app.delete("/api/byok/session/{slug}")
 def forget_byok_session(slug: str, request: Request, response: Response, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
-    resolve_byok_package(slug, buyer_token)
+    resolve_byok_package(slug, buyer_token, request=request)
     token = request.cookies.get(byok_cookie_name(slug))
     forgotten = byok_sessions.forget(token)
     clear_byok_cookie(response, slug=slug)
@@ -244,7 +356,7 @@ def paid_chat(
         app_config = core.registry.get(payload.slug)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
-    require_entitlement(app_config, buyer_token)
+    require_entitlement(app_config, buyer_token, request=request)
     payer_mode = core.resolve_payer_mode(payload, app_config)
     byok_api_key = None
     if payer_mode == "BYOK":

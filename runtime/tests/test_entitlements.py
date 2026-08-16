@@ -171,7 +171,7 @@ def test_paid_page_can_load_shell_but_config_requires_entitlement(commercial):
     make_paid(cfg)
     page = client.get("/a/migration-fixture-ai")
     assert page.status_code == 200
-    assert "購入者アクセスコード" in page.text
+    assert "Stripe決済後は自動でAIへ接続します" in page.text
     assert client.get("/apps/migration-fixture-ai/public-config").status_code == 401
     assert client.get(
         "/apps/migration-fixture-ai/public-config",

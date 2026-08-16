@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import stat
 import subprocess
 from pathlib import Path
@@ -37,6 +38,36 @@ def ensure_private_child_dir(path: Path, *, parent: Path) -> Path:
     return resolved
 
 
+def ensure_private_secret(path: Path, *, parent: Path) -> str:
+    parent = parent.resolve()
+    if not path.is_absolute():
+        raise ValueError("private secret path must be absolute")
+    if path.is_symlink():
+        raise ValueError("private secret must not be a symlink")
+    resolved = path.resolve(strict=False)
+    try:
+        resolved.relative_to(parent)
+    except ValueError as exc:
+        raise ValueError("private secret must stay inside paid dogfood state directory") from exc
+    if not resolved.exists():
+        value = secrets.token_urlsafe(48)
+        fd = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, (value + "\n").encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    if resolved.is_symlink() or not resolved.is_file():
+        raise ValueError("private secret must be a regular file")
+    os.chmod(resolved, 0o600)
+    if stat.S_IMODE(resolved.stat().st_mode) & 0o077:
+        raise ValueError("private secret must be owner-only")
+    value = resolved.read_text(encoding="utf-8").strip()
+    if len(value) < 32:
+        raise ValueError("private secret is unexpectedly short")
+    return value
+
+
 def build_paid_env(
     *,
     base: dict[str, str],
@@ -44,6 +75,7 @@ def build_paid_env(
     state_dir: Path,
     config_dir: Path,
     revision: str,
+    cookie_secret: str | None = None,
 ) -> dict[str, str]:
     if len(revision) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in revision):
         raise ValueError("revision must be an exact 40-character Git commit SHA")
@@ -61,6 +93,11 @@ def build_paid_env(
         "WEB_AI_ALLOW_INSECURE_HTTP": "0",
         "DEPLOYED_REVISION": revision.lower(),
     })
+    if cookie_secret:
+        env["WEB_AI_ENTITLEMENT_COOKIE_SECRET"] = cookie_secret
+    stripe_key = (env.get("WEB_AI_STRIPE_SECRET_KEY") or "").strip()
+    if stripe_key and not stripe_key.startswith(("sk_", "rk_")):
+        raise ValueError("WEB_AI_STRIPE_SECRET_KEY must be a Stripe server or restricted key")
     return env
 
 
@@ -148,6 +185,7 @@ def main() -> int:
         revision_before = exact_clean_revision(repo_dir)
         state_dir = ensure_private_state_dir(Path(args.state_dir), runtime_dir=runtime_dir)
         config_dir = ensure_private_child_dir(state_dir / "apps", parent=state_dir)
+        cookie_secret = ensure_private_secret(state_dir / "entitlement-cookie.secret", parent=state_dir)
         python, venv_created = ensure_venv(runtime_dir=runtime_dir, requirements=requirements)
         package = prepare_package(
             python=python,
@@ -165,6 +203,7 @@ def main() -> int:
             state_dir=state_dir,
             config_dir=config_dir,
             revision=revision_after,
+            cookie_secret=cookie_secret,
         )
         preflight = run_json_preflight(python=python, runtime_dir=runtime_dir, env=env)
         hint = cloudflared_hint(port)
@@ -184,6 +223,8 @@ def main() -> int:
         "active_packages": preflight["active_packages"],
         "active_paid_packages": preflight["active_paid_packages"],
         "entitlement_issuance_by_launcher": "NONE",
+        "entitlement_cookie_secret_persisted": True,
+        "stripe_checkout_verification_configured": bool(env.get("WEB_AI_STRIPE_SECRET_KEY")),
         "payment_link_configured": True,
         "port": port,
         "venv_created": venv_created,
