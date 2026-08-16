@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_CEILING
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field, field_validator
@@ -15,6 +16,7 @@ ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 AccessMode = Literal["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"]
 PayerMode = Literal["BYOK", "PLATFORM_CREDIT"]
 DeliveryMode = Literal["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"]
+CheckoutSetupMode = Literal["SELF_SETUP", "ASSISTED_SETUP"]
 
 
 class StudioValidationError(ValueError):
@@ -38,6 +40,8 @@ class StudioDraft(BaseModel):
     access_mode: AccessMode = "FREE"
     access_price_jpy: int = Field(default=0, ge=0, le=100_000_000)
     included_runs: int = Field(default=0, ge=0, le=1_000_000)
+    checkout_setup_mode: CheckoutSetupMode = "SELF_SETUP"
+    stripe_payment_link_url: str = Field(default="", max_length=2048)
 
     allowed_payer_modes: list[PayerMode] = Field(default_factory=lambda: ["BYOK"])
     default_payer_mode: PayerMode = "BYOK"
@@ -63,6 +67,13 @@ class StudioDraft(BaseModel):
 
 def usd_to_micros(value: Decimal) -> int:
     return int((value * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+
+
+def is_https_url(value: str) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 @lru_cache(maxsize=8)
@@ -100,13 +111,25 @@ def build_package(
             errors.append("Platform-funded Knowledge requires an explicit positive tool-cost reserve.")
         warnings.append("Knowledge is a server binding in thin v0; file upload/indexing remains operator-assisted.")
 
-    if draft.access_mode == "FREE":
+    paid_access = draft.access_mode != "FREE"
+    if not paid_access:
         if draft.access_price_jpy != 0:
             errors.append("FREE access must have a zero access price.")
+        if draft.stripe_payment_link_url:
+            warnings.append("Stripe Payment Link is ignored for FREE access.")
     else:
         if draft.access_price_jpy <= 0:
             errors.append("Paid access intent requires a positive access price.")
         warnings.append("Commercial access enforcement is not implemented in thin v0; this is pricing intent only.")
+        warnings.append("Payment Link does not prove entitlement in thin v0; paid fulfillment remains manual handoff.")
+        if draft.checkout_setup_mode == "SELF_SETUP":
+            if not is_https_url(draft.stripe_payment_link_url):
+                errors.append("SELF_SETUP paid access requires a valid HTTPS Stripe Payment Link or custom Stripe checkout URL.")
+        elif draft.checkout_setup_mode == "ASSISTED_SETUP":
+            if draft.stripe_payment_link_url and not is_https_url(draft.stripe_payment_link_url):
+                errors.append("Assisted checkout URL must be a valid HTTPS URL when provided.")
+            if not draft.stripe_payment_link_url:
+                warnings.append("Stripe Payment Link is pending assisted setup before the package can be sold.")
 
     if draft.access_mode == "ALLOWANCE_THEN_PAID" and draft.included_runs <= 0:
         errors.append("ALLOWANCE_THEN_PAID requires included_runs > 0.")
@@ -124,6 +147,22 @@ def build_package(
 
     if errors:
         raise StudioValidationError(errors, warnings)
+
+    checkout = {
+        "provider": "NONE",
+        "setup_mode": "NONE",
+        "payment_link_url": "",
+        "fulfillment": "NONE",
+        "entitlement_verification": "NOT_REQUIRED",
+    }
+    if paid_access:
+        checkout = {
+            "provider": "STRIPE_PAYMENT_LINK",
+            "setup_mode": draft.checkout_setup_mode,
+            "payment_link_url": draft.stripe_payment_link_url,
+            "fulfillment": "MANUAL_HANDOFF",
+            "entitlement_verification": "NOT_IMPLEMENTED",
+        }
 
     package = {
         "id": draft.slug,
@@ -144,6 +183,7 @@ def build_package(
             "price_amount_minor": draft.access_price_jpy,
             "included_runs": draft.included_runs,
             "commercial_enforcement": "NOT_IMPLEMENTED",
+            "checkout": checkout,
         },
         "billing": {
             "allowed_payer_modes": draft.allowed_payer_modes,
