@@ -65,7 +65,15 @@ def good_env(tmp_path: Path) -> dict[str, str]:
 def run_with_package(tmp_path: Path, package: dict, env: dict[str, str] | None = None):
     config = tmp_path / "configs"
     config.mkdir(exist_ok=True)
-    (config / "paid.json").write_text(json.dumps(package), encoding="utf-8")
+    os.chmod(config, 0o700)
+    package_path = config / "paid.json"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    os.chmod(package_path, 0o600)
+    slug = package.get("slug")
+    if slug:
+        instructions = config / f"{slug}.instructions.md"
+        instructions.write_text("private hosted instructions", encoding="utf-8")
+        os.chmod(instructions, 0o600)
     return run_preflight(
         env=env or good_env(tmp_path),
         runtime_dir=RUNTIME_DIR,
@@ -194,6 +202,47 @@ def test_preflight_rejects_active_portable_package_on_current_commercial_entrypo
     package["delivery"]["portable_copy_risk_acknowledged"] = True
     result = run_with_package(tmp_path, package)
     assert "ACTIVE_PACKAGE_DELIVERY_UNSUPPORTED" in codes(result)
+
+
+def test_preflight_rejects_world_writable_config_authority(tmp_path):
+    config = tmp_path / "configs"
+    config.mkdir()
+    os.chmod(config, 0o777)
+    package = paid_active_package()
+    package_path = config / "paid.json"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    os.chmod(package_path, 0o600)
+    instructions = config / f"{package['slug']}.instructions.md"
+    instructions.write_text("private", encoding="utf-8")
+    os.chmod(instructions, 0o600)
+    result = run_preflight(
+        env=good_env(tmp_path),
+        runtime_dir=RUNTIME_DIR,
+        config_dir=config,
+        verify_git_revision=False,
+    )
+    assert "CONFIG_DIR_WORLD_WRITABLE" in codes(result)
+
+
+def test_preflight_rejects_open_permissions_on_active_package_and_instructions(tmp_path):
+    config = tmp_path / "configs"
+    config.mkdir()
+    os.chmod(config, 0o700)
+    package = paid_active_package()
+    package_path = config / "paid.json"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    os.chmod(package_path, 0o644)
+    instructions = config / f"{package['slug']}.instructions.md"
+    instructions.write_text("private", encoding="utf-8")
+    os.chmod(instructions, 0o644)
+    result = run_preflight(
+        env=good_env(tmp_path),
+        runtime_dir=RUNTIME_DIR,
+        config_dir=config,
+        verify_git_revision=False,
+    )
+    assert "ACTIVE_PACKAGE_PERMISSIONS_TOO_OPEN" in codes(result)
+    assert "ACTIVE_INSTRUCTIONS_PERMISSIONS_TOO_OPEN" in codes(result)
 
 
 def test_draft_package_is_not_treated_as_active(tmp_path):
