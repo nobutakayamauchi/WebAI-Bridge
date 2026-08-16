@@ -79,9 +79,13 @@
     },
     "delivery": {
       "type": "object",
-      "required": ["mode"],
+      "required": ["mode", "portable_protection", "seat_limit", "copy_protection_guarantee", "portable_copy_risk_acknowledged"],
       "properties": {
-        "mode": {"enum": ["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"]}
+        "mode": {"enum": ["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"]},
+        "portable_protection": {"enum": ["NOT_APPLICABLE", "LICENSE_ONLY", "ACTIVATION_REQUIRED"]},
+        "seat_limit": {"type": "integer", "minimum": 0},
+        "copy_protection_guarantee": {"enum": ["HOSTED_BOUNDARY", "NOT_GUARANTEED", "PLANNED_ENTITLEMENT"]},
+        "portable_copy_risk_acknowledged": {"type": "boolean"}
       },
       "additionalProperties": true
     },
