@@ -96,7 +96,7 @@ def test_signed_cookie_authority_is_revoked_by_database_immediately(gateway):
     assert client.get(f"/apps/{SLUG}/public-config").status_code == 401
 
 
-def test_checkout_handoff_is_idempotent_while_active_but_cannot_replay_after_revoke(gateway, monkeypatch):
+def test_checkout_handoff_can_be_claimed_once_and_cannot_replay_after_revoke(gateway, monkeypatch):
     module, client = gateway
     monkeypatch.setattr(module, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
@@ -112,17 +112,21 @@ def test_checkout_handoff_is_idempotent_while_active_but_cannot_replay_after_rev
     assert "HttpOnly" in set_cookie
     assert client.get(f"/apps/{SLUG}/public-config").status_code == 200
 
-    duplicate = client.get(
+    second_client = TestClient(module.app)
+    duplicate = second_client.get(
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
     )
-    assert duplicate.status_code == 303
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "This Checkout Session has already been claimed"
+    assert module.entitlement_cookie_name(SLUG) not in duplicate.headers.get("set-cookie", "")
+    assert second_client.get(f"/apps/{SLUG}/public-config").status_code == 401
     assert len(module.entitlements.list_for_package(SLUG)) == 1
 
     assert module.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
     assert client.get(f"/apps/{SLUG}/public-config").status_code == 401
 
-    replay = client.get(
+    replay = second_client.get(
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
     )
