@@ -1,261 +1,240 @@
 # Billing / Checkout Canonical Specification
 
-Status: `SPEC_FROZEN / IMPLEMENTATION_PARTIAL`
+Status: `SPEC_FROZEN / IMPLEMENTATION_PARTIAL / READINESS_FAIL_CLOSED`
 Date: 2026-08-16
 
-This document freezes the commercial and inference-cost model for WebAI Bridge.
-
 ## 1. Core separation
-
-The product has two independent money flows:
 
 ```text
 ACCESS PRICE != INFERENCE COST
 ```
 
-- **Access price**: what the buyer pays for the AI Package / right to use it.
-- **Inference cost**: what a provider charges to execute the model.
+- **Access price**: what a buyer pays for the AI Package/right to use it.
+- **Inference cost**: what a model/tool provider charges to execute it.
 
-A paid AI may use BYOK. A free AI may still consume creator/platform inference budget. A subscription does not imply unlimited inference.
+A paid AI may use BYOK. A free AI may consume a creator/platform budget. Subscription never implies unlimited tokens.
 
-## 2. Access modes
+## 2. Access modes and charge basis
 
-Supported product intent:
-
-- `FREE`
-- `ALLOWANCE_THEN_PAID`
-- `BUY_ONCE`
-- `SUBSCRIPTION`
-- `PER_USE`
-- `PAID` (generic paid intent while a more specific mode is not selected)
-
-Every non-free access mode records a positive access price. Currency and access price are package metadata independent from inference billing.
-
-## 3. Buy-once product
-
-The preferred buy-once shape is:
+The access mode and the basis of the price are machine-readable.
 
 ```text
-BUY_ONCE
-→ buyer obtains package usage rights
-→ buyer selects a supported provider/model
-→ buyer supplies their own API key (BYOK)
-→ provider inference cost belongs to the buyer
+FREE                -> FREE
+BUY_ONCE            -> ONE_TIME
+SUBSCRIPTION        -> MONTHLY
+PER_USE             -> PER_RUN
+PAID                -> UNSPECIFIED_PAID
+ALLOWANCE_THEN_PAID -> UNSPECIFIED_AFTER_ALLOWANCE
 ```
 
-This lets a creator sell the AI design, Instructions, Knowledge, UI, updates or usage rights without inheriting unbounded inference cost.
-
-Provider/model freedom is a package policy:
-
-- `FIXED`
-- `RECOMMENDED_BUT_CHANGEABLE`
-- `SUPPORTED_MODELS_FREE_CHOICE`
-
-Only actually supported provider adapters may be advertised.
-
-## 4. Inference payer modes
-
-The payer must be resolved before provider execution.
+The two generic paid modes remain useful draft intent, but:
 
 ```text
-NO PAYER RESOLUTION
-→ NO BUDGET AUTHORIZATION
-→ NO MODEL EXECUTION
+PRICE AMOUNT WITHOUT CHARGE BASIS != COMPLETE COMMERCIAL CONTRACT
+```
+
+Therefore `PAID` and `ALLOWANCE_THEN_PAID` are not commercial-ready until their billing basis is made specific.
+
+## 3. Inference payer
+
+Before provider execution:
+
+```text
+PAYER RESOLUTION
+→ BUDGET AUTHORIZATION
+→ MODEL RESOLUTION
+→ PROVIDER EXECUTION
 ```
 
 Target payer modes:
+- `BYOK`
+- `USER_CREDIT`
+- `CREATOR_PAYS`
+- `PLATFORM_CREDIT`
+- `SPONSORED`
+- `HYBRID`
 
-- `BYOK` — end user supplies their provider credential.
-- `USER_CREDIT` — user spends WebAI credit.
-- `CREATOR_PAYS` — creator-owned bounded budget/credential pays.
-- `PLATFORM_CREDIT` — operator-funded bounded budget.
-- `SPONSORED` — explicit sponsor budget.
-- `HYBRID` — ordered fallback across authorized payer modes.
+Current hosted runtime implements only BYOK and bounded PLATFORM_CREDIT.
 
-V0 executable runtime currently supports BYOK and bounded PLATFORM_CREDIT. Other modes are frozen contract targets, not current runtime claims.
+## 4. Hosted BYOK
 
-## 5. Creator API credentials
+Current BYOK is `SERVER_PROXY_EPHEMERAL`.
 
-Creator credentials must never be embedded in an AI Package or browser-delivered config.
-
-Future persistent credential path:
-
-```text
-creator authentication
-→ encrypted/managed secret store
-→ credential_ref in policy
-→ server-side provider execution
-```
-
-Until that exists, no feature may pretend that creator API-key persistence is safe or supported.
-
-## 6. Creator-funded budget allocation
-
-A creator may define a total inference budget and how it is distributed across users.
-
-Allocation policies:
-
-### `EQUAL`
-All eligible users draw from an equal allocation.
-
-### `INDIVIDUAL`
-Named/identified users receive explicit individual allocations.
-
-### `INDIVIDUAL_THEN_SHARED`
-Each selected user receives an individual guaranteed allocation first. The unallocated remainder becomes a shared pool.
-
-Example:
+The user key is not intentionally persisted by the runtime, but it travels through the WebAI Bridge server so the hosted runtime can call the provider while keeping creator Instructions/Knowledge server-side.
 
 ```text
-TOTAL CREATOR BUDGET: 10,000 JPY
-A guaranteed:           2,000 JPY
-B guaranteed:           1,000 JPY
-C guaranteed:             500 JPY
-SHARED REMAINDER:       6,500 JPY
+NOT PERSISTED != NEVER SEEN BY SERVER
 ```
 
-A user may also be bounded by both:
+Package/browser copy must not imply otherwise.
 
-- maximum percentage of total budget; and
-- absolute maximum amount.
+## 5. Platform-funded inference
 
-Effective user cap uses the stricter bound:
+PLATFORM_CREDIT requires:
+- server credential;
+- budget identity;
+- hard limit;
+- pre-call cost reservation;
+- positive extra tool-cost reserve for platform-funded Knowledge.
+
+### Accounting truth after reservation
+
+Reservation is an authorization estimate, not accounting truth.
+
+If observed provider cost is greater than the reservation after execution:
+
+```text
+OBSERVED ACTUAL COST > RESERVED COST
+→ RECORD OBSERVED ACTUAL COST
+→ MARK RESERVATION OVERRUN
+→ BLOCK LATER SPEND WHEN BUDGET IS EXHAUSTED/OVER LIMIT
+```
+
+The system must never cap the ledger entry at the reservation merely to make the hard limit appear respected.
+
+Reservation IDs, idempotent retry settlement and crash lease recovery are still required before production wallet/multi-worker semantics are claimed.
+
+## 6. Creator-funded allocation target
+
+Frozen allocation policies:
+- `EQUAL`
+- `INDIVIDUAL`
+- `INDIVIDUAL_THEN_SHARED`
+
+For individual caps:
 
 ```text
 USER_CAP = min(total_budget × max_percent, absolute_cap)
 ```
 
-This prevents one user from consuming the creator's whole budget while allowing unused budget to remain useful.
+Unused individually allocated budget may enter the shared pool only when the selected policy explicitly allows it.
+
+Current runtime does not yet have authenticated user identity or per-user allocation enforcement, so these are v1 runtime contracts.
 
 ## 7. Payer fallback
 
-Hybrid packages may define an ordered payer fallback, for example:
+Example:
 
 ```text
-1. CREATOR_PAYS
-2. USER_CREDIT
-3. BYOK
+CREATOR_PAYS
+→ USER_CREDIT
+→ BYOK
 ```
 
-Each transition must be explicit to the user. Exhausting one payer budget must never silently charge another payer.
+Every transition must be explicit. Exhausting one payer may not silently charge another payer.
 
-## 8. Paid hosted inference and margin
+## 8. Stripe Payment Links
 
-When WebAI/creator credentials fund inference for a paying user, execution must reserve enough budget before the provider call.
+Early checkout is externalized to creator-owned Stripe Payment Links.
 
-Target flow:
+WebAI Bridge does not handle card data in v0.
+
+Hard distinctions:
 
 ```text
-estimate bounded maximum provider cost
-→ reserve payer budget
-→ reserve/authorize user charge
-→ execute provider
-→ observe actual usage
-→ settle actual provider cost
-→ apply configured commercial markup/fee
-→ release unused reservation
+PAYMENT LINK != VERIFIED ENTITLEMENT
+CHECKOUT URL != VERIFIED PRODUCT/PRICE BINDING
 ```
 
-V0 terminology uses **markup** rather than claiming a specific accounting gross-margin definition.
+### SELF_SETUP
 
-Commercial charge must be sufficient to recover the authorized provider cost plus the configured commercial amount. Missing/unknown provider/tool pricing fails closed for platform-funded execution.
+Creator supplies an HTTPS checkout URL and explicitly attests that the Stripe checkout matches:
+- product/access mode;
+- access amount;
+- currency;
+- billing basis/cadence.
 
-## 9. Checkout rail — Stripe Payment Links
+This records `CREATOR_ATTESTED`; it is not automated Stripe verification.
 
-Default early-stage checkout rail:
+### ASSISTED_SETUP
 
-`STRIPE_PAYMENT_LINK`
+Setup support may help with:
+- product name/description;
+- amount/cadence;
+- Payment Link;
+- post-payment flow;
+- handoff checklist.
 
-Reason:
+A missing link is `ASSISTED_PENDING` and blocks commercial readiness.
 
-- hosted checkout;
-- no custom card handling in WebAI Bridge;
-- usable for one-time products and subscriptions;
-- shareable as a URL;
-- creator can own their Stripe account directly.
-
-WebAI Bridge does not need to become a payment processor to prove the product.
-
-### V0 checkout authority
-
-V0 uses a creator-owned Stripe Payment Link supplied manually.
-
-No Stripe secret key is required inside an AI Package.
-
-A Payment Link URL alone is **not proof of entitlement**.
-
-Until webhook/entitlement verification exists, paid fulfillment is classified as:
-
-`MANUAL_HANDOFF / EXTERNAL_CHECKOUT`
-
-Do not expose a supposedly protected permanent AI URL merely by redirecting every successful buyer to the same shareable URL and call that secure entitlement.
-
-### V1 checkout authority
-
-Add verified payment fulfillment using Stripe events/webhooks and explicit entitlement state.
+### Future verified checkout
 
 Target:
 
 ```text
-Payment Link
-→ verified Stripe payment event
-→ entitlement creation/update
-→ protected package access
+Stripe event/webhook
+→ verify payment state and package binding
+→ issue/update entitlement
+→ authorize protected access
 ```
 
-Delayed payment methods must not be treated as paid merely because checkout was opened or redirected.
+Until this exists, opening/redirecting from checkout is not proof of purchase.
 
-### Later automation
+## 9. Paid hosted runtime
 
-Only after real demand justifies it:
+DA found a critical gap: a shareable AI URL plus a Payment Link does not enforce the access price.
 
-- Payment Links API creation from Creator Studio;
-- Stripe Connect / connected-account flows where platform revenue sharing is required;
-- automated subscriptions, refunds/entitlements and creator payouts.
-
-These are not v0 requirements.
-
-## 10. Creator setup service
-
-Commercial onboarding has two service paths.
-
-### `SELF_SETUP`
-For creators who can configure Stripe themselves (including using their own AI assistance).
-
-They provide their working Payment Link and use the lower-cost setup path.
-
-### `ASSISTED_SETUP`
-For creators who do not want to learn Stripe configuration.
-
-WebAI Bridge support can help them configure:
-
-- product name/description;
-- one-time vs subscription price;
-- Payment Link creation;
-- post-payment confirmation/redirect design;
-- handoff checklist.
-
-The Stripe account remains the creator's account. The creator retains ownership/control of their payment account and credentials.
-
-Assisted setup is a paid support/service tier; exact service price remains a commercial decision rather than a protocol invariant.
-
-## 11. Safety boundary for portable / buy-once AI
-
-Hosted execution can enforce a platform Safety Kernel. Portable/modifiable packages cannot honestly guarantee that a recipient will never remove client-side/local safeguards.
-
-Therefore:
+Current response is fail-closed:
 
 ```text
-CREATOR POLICY < PLATFORM SAFETY POLICY   (hosted runtime)
+PAID HOSTED + NO VERIFIED ENTITLEMENT
+→ NO CHAT EXECUTION
 ```
 
-For portable packages:
+So the current runtime deliberately blocks all paid hosted packages. The package may still be configuration-valid/exportable as a draft.
 
-- ship the supported Safety Kernel in the official package;
-- prohibit malicious/abusive use in applicable terms/license;
-- do not claim technical enforcement after a fully modifiable package leaves the hosted runtime.
+## 10. Commercial readiness
 
-## 12. Hard invariants
+Creator Studio distinguishes:
+
+```text
+CONFIG_VALID != READY_TO_RUN != READY_TO_SELL
+```
+
+Potential commercial blockers include:
+- hosted entitlement missing;
+- portable runtime missing;
+- portable protection implementation missing;
+- checkout setup pending;
+- generic/unspecified charge basis;
+- portable Knowledge binding missing;
+- portable server-funded payer path missing.
+
+A Package JSON download is not a sale authorization.
+
+## 11. Buy-once
+
+Target buy-once model remains:
+
+```text
+BUY_ONCE
+→ buyer purchases AI Package rights
+→ buyer may use BYOK when the selected distribution/runtime supports it
+→ inference provider cost belongs to the buyer unless another payer policy is explicit
+```
+
+But delivery is separate from purchase:
+- Level 4 paid hosted is currently blocked on entitlement;
+- Levels 1-3 are currently blocked on missing portable runtime.
+
+`BUY_ONCE` therefore freezes the commercial contract without falsely claiming delivery is complete.
+
+## 12. Creator credentials
+
+Creator provider credentials must never be Package JSON/browser-delivered data.
+
+Future persistent path:
+
+```text
+creator authentication
+→ managed/encrypted secret store
+→ credential_ref
+→ server-authorized provider execution
+```
+
+No creator secret persistence is implemented in thin v0.
+
+## 13. Hard invariants
 
 ```text
 ACCESS PRICE != INFERENCE COST
@@ -264,33 +243,37 @@ FREE ACCESS != FREE INFERENCE
 BYOK != FREE PACKAGE
 SUBSCRIPTION != UNLIMITED TOKENS
 PAYMENT LINK != VERIFIED ENTITLEMENT
+CHECKOUT URL != VERIFIED PRICE BINDING
 CREATOR API KEY != PACKAGE DATA
 PAYER FALLBACK != SILENT CHARGE
 UNKNOWN COST != ZERO COST
+CONFIG_VALID != READY_TO_SELL
 ```
 
-## 13. Implementation order
+## 14. Implementation order
 
-### v0
-- access price intent
-- BYOK
+### thin v0
+- access price + charge-basis contract
+- BYOK disclosure/transport contract
 - bounded PLATFORM_CREDIT
-- package export
-- creator-supplied Stripe Payment Link as external checkout metadata/workflow
-- SELF_SETUP / ASSISTED_SETUP commercial onboarding
-- manual paid fulfillment; no false entitlement claim
+- truthful cost ledger
+- external Stripe Link metadata
+- SELF_SETUP attestation / ASSISTED_SETUP state
+- readiness/blocker model
+- paid hosted fail-closed
 
 ### v1
+- verified Stripe entitlement
 - USER_CREDIT wallet
-- usage meter
-- per-user and package caps
-- creator budget pools + allocation policies
-- verified Stripe webhook entitlement
-- automatic model/cost routing
+- authenticated user identity
+- per-user/package caps
+- creator allocation pools
+- model/cost routing
+- reservation identity/idempotent settlement/crash recovery
 
-### v2
-- persistent creator credential refs with proper secret management
+### later
+- managed creator credential refs
 - CREATOR_PAYS / SPONSORED / HYBRID
-- subscriptions with automated entitlement lifecycle
-- revenue split / creator payout where justified
-- Stripe Connect or equivalent only if the marketplace model requires it
+- subscription lifecycle enforcement
+- creator payout / revenue split
+- Stripe Connect only if marketplace economics require it
