@@ -69,8 +69,9 @@
         <option value="SUBSCRIPTION">月額</option>
         <option value="PER_USE">1回ごと</option>
       </select>
+      <div id="priceFields" class="hidden"><label for="accessPriceJpy">利用料（円）</label><input id="accessPriceJpy" type="number" min="1" step="1" value="500"></div>
       <div id="allowanceFields" class="hidden"><label for="includedRuns">無料回数</label><input id="includedRuns" type="number" min="1" value="10"></div>
-      <p class="note">有料設定は現段階では「販売意図」の記録。決済・利用権 enforcement は後段です。</p>
+      <p class="note">ここはAIそのものの利用料。下の「推論代を誰が払う？」とは別です。有料設定は現段階では販売意図の記録で、決済・利用権 enforcement は後段です。</p>
     </section>
 
     <section>
@@ -125,7 +126,9 @@
   let lastValid = null;
 
   function toggle() {
+    const paid = $('accessMode').value !== 'FREE';
     $('knowledgeFields').classList.toggle('hidden', !$('knowledgeEnabled').checked);
+    $('priceFields').classList.toggle('hidden', !paid);
     $('allowanceFields').classList.toggle('hidden', $('accessMode').value !== 'ALLOWANCE_THEN_PAID');
     $('platformFields').classList.toggle('hidden', !$('payerPlatform').checked);
     const payers = [];
@@ -149,13 +152,14 @@
     if ($('payerByok').checked) allowedPayers.push('BYOK');
     if ($('payerPlatform').checked) allowedPayers.push('PLATFORM_CREDIT');
     const allowedModels = [...document.querySelectorAll('.modelCheck:checked')].map(x => x.value);
+    const paid = $('accessMode').value !== 'FREE';
     return {
       display_name: $('name').value.trim(), slug: $('slug').value.trim(), description: $('description').value,
       instructions: $('instructions').value, welcome: $('welcome').value,
       knowledge_enabled: $('knowledgeEnabled').checked, knowledge_vector_store_env: $('vectorEnv').value.trim(),
       knowledge_reserve_tokens: Number($('knowledgeReserveTokens').value || 0),
       knowledge_platform_tool_reserve_usd: $('toolReserveUsd').value || '0',
-      access_mode: $('accessMode').value,
+      access_mode: $('accessMode').value, access_price_jpy: paid ? Number($('accessPriceJpy').value || 0) : 0,
       included_runs: $('accessMode').value === 'ALLOWANCE_THEN_PAID' ? Number($('includedRuns').value || 0) : 0,
       allowed_payer_modes: allowedPayers, default_payer_mode: $('defaultPayer').value || 'BYOK',
       platform_budget_id_env: $('budgetEnv').value.trim(), platform_hard_limit_usd: $('hardLimitUsd').value || '0',
