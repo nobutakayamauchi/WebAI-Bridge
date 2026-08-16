@@ -13,6 +13,8 @@
   },
   "access": {
     "mode": "FREE",
+    "currency": "JPY",
+    "price_amount_minor": 0,
     "included_runs": 0,
     "commercial_enforcement": "NOT_IMPLEMENTED"
   },
