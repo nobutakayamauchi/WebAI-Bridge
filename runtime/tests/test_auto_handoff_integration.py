@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from pathlib import Path
 
@@ -23,11 +24,12 @@ PAYMENT_LINK_URL = "https://buy.stripe.com/auto-test"
 def gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_AI_LEDGER_PATH", str(tmp_path / "ledger.sqlite3"))
     monkeypatch.setenv("WEB_AI_ENTITLEMENT_DB", str(tmp_path / "entitlements.sqlite3"))
+    monkeypatch.setenv("WEB_AI_HANDOFF_DB", str(tmp_path / "handoff.sqlite3"))
     monkeypatch.setenv("WEB_AI_REQUESTS_PER_MINUTE", "999")
     monkeypatch.setenv("WEB_AI_ALLOW_INSECURE_HTTP", "1")
     monkeypatch.setenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", COOKIE_SECRET)
     monkeypatch.setenv("WEB_AI_STRIPE_SECRET_KEY", "rk_test_auto")
-    for name in ["commercial", "app", "entitlements", "cost_router"]:
+    for name in ["commercial", "app", "entitlements", "handoff_tickets", "cost_router"]:
         sys.modules.pop(name, None)
     module = importlib.import_module("commercial")
     cfg = module.core.registry.get(SLUG)
@@ -97,36 +99,51 @@ def test_signed_cookie_authority_is_revoked_by_database_immediately(gateway):
 
 
 def test_checkout_handoff_can_be_claimed_once_and_cannot_replay_after_revoke(gateway, monkeypatch):
-    module, client = gateway
+    module, payment_browser = gateway
     monkeypatch.setattr(module, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
 
-    first = client.get(
+    first = payment_browser.get(
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
     )
     assert first.status_code == 303
-    assert first.headers["location"] == f"/a/{SLUG}"
-    set_cookie = first.headers.get("set-cookie", "")
+    handoff_url = first.headers["location"]
+    assert handoff_url.startswith(f"/checkout/handoff/{SLUG}?ticket=handoff_")
+    assert module.entitlement_cookie_name(SLUG) not in first.headers.get("set-cookie", "")
+    assert payment_browser.get(f"/apps/{SLUG}/public-config").status_code == 401
+
+    safari = TestClient(module.app)
+    landing = safari.get(handoff_url)
+    assert landing.status_code == 200
+    match = re.search(r'href="([^"]*checkout/activate/[^"]+)"', landing.text)
+    assert match is not None
+    activate_url = match.group(1).replace("&amp;", "&")
+
+    activated = safari.get(activate_url, follow_redirects=False)
+    assert activated.status_code == 303
+    assert activated.headers["location"] == f"/a/{SLUG}"
+    set_cookie = activated.headers.get("set-cookie", "")
     assert module.entitlement_cookie_name(SLUG) in set_cookie
     assert "HttpOnly" in set_cookie
-    assert client.get(f"/apps/{SLUG}/public-config").status_code == 200
+    assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
 
-    second_client = TestClient(module.app)
-    duplicate = second_client.get(
+    duplicate_ticket = payment_browser.get(activate_url, follow_redirects=False)
+    assert duplicate_ticket.status_code == 409
+
+    duplicate_checkout = payment_browser.get(
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
     )
-    assert duplicate.status_code == 409
-    assert duplicate.json()["detail"] == "This Checkout Session has already been claimed"
-    assert module.entitlement_cookie_name(SLUG) not in duplicate.headers.get("set-cookie", "")
-    assert second_client.get(f"/apps/{SLUG}/public-config").status_code == 401
+    assert duplicate_checkout.status_code == 409
+    assert duplicate_checkout.json()["detail"] == "This Checkout Session has already been claimed"
+    assert module.entitlement_cookie_name(SLUG) not in duplicate_checkout.headers.get("set-cookie", "")
     assert len(module.entitlements.list_for_package(SLUG)) == 1
 
     assert module.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
-    assert client.get(f"/apps/{SLUG}/public-config").status_code == 401
+    assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
 
-    replay = second_client.get(
+    replay = payment_browser.get(
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
     )
