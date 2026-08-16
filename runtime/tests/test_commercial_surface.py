@@ -15,3 +15,18 @@ def test_commercial_gateway_explicitly_wraps_paid_config_and_chat_routes():
     assert '@app.get("/apps/{slug}/public-config")' in source
     assert '@app.post("/api/chat")' in source
     assert source.count("require_entitlement(app_config, buyer_token)") >= 2
+
+
+def test_paid_buyer_page_requires_secure_transport_before_fragment_secret_processing():
+    source = (RUNTIME_DIR / "commercial.py").read_text(encoding="utf-8")
+    marker = 'if (app_config.get("access") or {}).get("mode") == "FREE":\n        return FileResponse(core.STATIC_DIR / "index.html")\n    require_secure_transport(request)'
+    assert marker in source
+
+
+def test_paid_buyer_page_has_no_store_no_referrer_frame_and_exfiltration_guards():
+    source = (RUNTIME_DIR / "commercial.py").read_text(encoding="utf-8")
+    assert 'response.headers["Cache-Control"] = "no-store"' in source
+    assert 'response.headers["Referrer-Policy"] = "no-referrer"' in source
+    assert 'response.headers["X-Frame-Options"] = "DENY"' in source
+    assert "connect-src 'self'" in source
+    assert "frame-ancestors 'none'" in source
