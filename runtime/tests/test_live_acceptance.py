@@ -17,6 +17,7 @@ class FakeRequester:
     def __init__(self):
         self.calls = []
         self.config_override = None
+        self.cookie = "webai_byok_paid-ai=byok_opaque-session"
 
     def request(self, method, url, *, headers=None, json_body=None, timeout=30.0):
         headers = dict(headers or {})
@@ -56,10 +57,38 @@ class FakeRequester:
                 }
                 return Response(200, {"content-type": "application/json"}, json.dumps(config).encode())
             return Response(401, {"content-type": "application/json"}, json.dumps({"detail": "Valid buyer access token is required"}).encode())
+        if url.endswith("/api/byok/session") and method.upper() == "POST":
+            if headers.get("X-WebAI-Entitlement") != "webai_abcdefghijklmnopqrstuvwxyz123456":
+                return Response(401, {}, b"{}")
+            if json_body != {"slug": "paid-ai", "api_key": "provider-secret"}:
+                return Response(400, {}, b"{}")
+            return Response(200, {
+                "content-type": "application/json",
+                "set-cookie": "webai_byok_paid-ai=byok_opaque-session; Path=/; HttpOnly; Secure; SameSite=Strict",
+            }, json.dumps({
+                "connected": True,
+                "expires_in_seconds": 900,
+                "storage": "PROCESS_MEMORY_ONLY",
+                "browser_api_key_retained": False,
+            }).encode())
+        if url.endswith("/api/byok/session/paid-ai"):
+            if headers.get("X-WebAI-Entitlement") != "webai_abcdefghijklmnopqrstuvwxyz123456":
+                return Response(401, {}, b"{}")
+            if headers.get("Cookie") != self.cookie:
+                return Response(402, {}, b"{}")
+            if method.upper() == "DELETE":
+                return Response(200, {"content-type": "application/json"}, json.dumps({"forgotten": True, "connected": False}).encode())
+            return Response(200, {"content-type": "application/json"}, json.dumps({
+                "connected": True,
+                "expires_in_seconds": 899,
+                "storage": "PROCESS_MEMORY_ONLY",
+            }).encode())
         if url.endswith("/api/chat"):
             if headers.get("X-WebAI-Entitlement") != "webai_abcdefghijklmnopqrstuvwxyz123456":
                 return Response(401, {}, b"{}")
-            if headers.get("X-Provider-API-Key") != "provider-secret":
+            if headers.get("X-Provider-API-Key"):
+                return Response(400, {}, json.dumps({"detail": "legacy provider header forbidden"}).encode())
+            if headers.get("Cookie") != self.cookie:
                 return Response(402, {}, b"{}")
             return Response(200, {"content-type": "application/json"}, json.dumps({
                 "text": "live answer",
@@ -92,10 +121,11 @@ def test_perimeter_acceptance_proves_https_headers_and_entitlement_without_provi
     assert contract["delivery_mode"] == "HOSTED_ONLY"
     assert contract["payer_mode"] == "BYOK"
     assert result["evidence"][-1] == {"gate": "live_provider", "status": "SKIPPED"}
+    assert not any("/api/byok/session" in call["url"] for call in requester.calls)
     assert not any(call["url"].endswith("/api/chat") for call in requester.calls)
 
 
-def test_provider_acceptance_uses_secrets_but_never_returns_them():
+def test_provider_acceptance_uses_ephemeral_session_and_never_returns_secrets():
     requester = FakeRequester()
     result = run_acceptance(
         requester,
@@ -109,14 +139,22 @@ def test_provider_acceptance_uses_secrets_but_never_returns_them():
     encoded = json.dumps(result)
     assert token() not in encoded
     assert "provider-secret" not in encoded
+    assert "byok_opaque-session" not in encoded
+    session = next(item for item in result["evidence"] if item["gate"] == "ephemeral_byok_session")
+    assert session == {"gate": "ephemeral_byok_session", "status": "PASS", "browser_api_key_retained": False}
     provider = result["evidence"][-1]
     assert provider["status"] == "PASS"
     assert provider["payer_mode"] == "BYOK"
     assert provider["response_chars"] > 0
     assert len(provider["response_sha256"]) == 64
 
+    chat = next(call for call in requester.calls if call["url"].endswith("/api/chat"))
+    assert "X-Provider-API-Key" not in chat["headers"]
+    assert chat["headers"]["Cookie"] == requester.cookie
+    assert any(call["method"] == "DELETE" and call["url"].endswith("/api/byok/session/paid-ai") for call in requester.calls)
 
-def test_wrong_live_contract_fails_before_provider_call():
+
+def test_wrong_live_contract_fails_before_provider_or_session_call():
     cases = [
         {"status": "draft"},
         {"access": {"mode": "FREE", "commercial_enforcement": "NOT_IMPLEMENTED"}},
@@ -146,6 +184,7 @@ def test_wrong_live_contract_fails_before_provider_call():
                 provider_call=True,
                 provider_key="provider-secret",
             )
+        assert not any("/api/byok/session" in call["url"] for call in requester.calls)
         assert not any(call["url"].endswith("/api/chat") for call in requester.calls)
 
 
