@@ -14,7 +14,7 @@ def test_commercial_gateway_explicitly_wraps_paid_config_and_chat_routes():
     source = (RUNTIME_DIR / "commercial.py").read_text(encoding="utf-8")
     assert '@app.get("/apps/{slug}/public-config")' in source
     assert '@app.post("/api/chat")' in source
-    assert source.count("require_entitlement(app_config, buyer_token)") >= 2
+    assert source.count("require_entitlement(app_config, buyer_token, request=request)") >= 2
 
 
 def test_paid_buyer_page_requires_secure_transport_after_free_surface_branch():
@@ -38,6 +38,25 @@ def test_paid_buyer_page_has_no_store_no_referrer_frame_and_exfiltration_guards(
     assert 'response.headers["X-Frame-Options"] = "DENY"' in source
     assert "connect-src 'self'" in source
     assert "frame-ancestors 'none'" in source
+
+
+def test_stripe_completion_converts_verified_payment_to_http_only_cookie_without_bearer_url():
+    source = (RUNTIME_DIR / "commercial.py").read_text(encoding="utf-8")
+    assert '@app.get("/checkout/complete/{slug}")' in source
+    assert "retrieve_checkout_session" in source
+    assert "validate_paid_checkout_session" in source
+    assert "set_entitlement_cookie(response" in source
+    assert 'RedirectResponse(url=f"/a/{slug}"' in source
+    assert "#access=" not in source
+
+
+def test_paid_ui_defaults_to_cookie_handoff_and_hides_legacy_code_as_recovery_only():
+    source = (RUNTIME_DIR / "static" / "paid.html").read_text(encoding="utf-8")
+    assert "Stripe決済後は自動でAIへ接続します" in source
+    assert "旧アクセスコードを使う（復旧用）" in source
+    assert "bootstrapAccess()" in source
+    assert "購入権を確認できません" in source
+    assert "Valid buyer access token is required" not in source
 
 
 def test_free_and_paid_byok_surfaces_use_explicit_connect_then_hide_copy():
