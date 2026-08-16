@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import html
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 import app as core
@@ -18,6 +20,7 @@ from entitlements import (
     PAYMENT_MISSING,
     PAYMENT_REVOKED,
 )
+from handoff_tickets import HandoffTicketStore
 from stripe_checkout import (
     StripeCheckoutError,
     retrieve_checkout_session,
@@ -28,15 +31,18 @@ from stripe_checkout import (
 
 BASE_DIR = Path(__file__).resolve().parent
 ENTITLEMENT_DB = Path(os.getenv("WEB_AI_ENTITLEMENT_DB", BASE_DIR / ".runtime" / "webai-entitlements.sqlite3"))
+HANDOFF_DB = Path(os.getenv("WEB_AI_HANDOFF_DB", ENTITLEMENT_DB.parent / "webai-handoff.sqlite3"))
 PAID_PAGE = BASE_DIR / "static" / "paid.html"
 entitlements = EntitlementStore(ENTITLEMENT_DB)
 SUPPORTED_MANUAL_ACCESS = {"BUY_ONCE", "SUBSCRIPTION"}
 BYOK_SESSION_TTL_SECONDS = int(os.getenv("WEB_AI_BYOK_SESSION_TTL_SECONDS", "900"))
 BYOK_SESSION_MAX = int(os.getenv("WEB_AI_BYOK_SESSION_MAX", "1000"))
+HANDOFF_TTL_SECONDS = int(os.getenv("WEB_AI_HANDOFF_TTL_SECONDS", "600"))
 ENTITLEMENT_COOKIE_MAX_AGE_SECONDS = int(os.getenv("WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS", "31536000"))
 ENTITLEMENT_COOKIE_SECRET = os.getenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", "")
 STRIPE_SECRET_KEY = os.getenv("WEB_AI_STRIPE_SECRET_KEY", "")
 byok_sessions = ByokSessionStore(ttl_seconds=BYOK_SESSION_TTL_SECONDS, max_sessions=BYOK_SESSION_MAX)
+handoffs = HandoffTicketStore(HANDOFF_DB, ttl_seconds=HANDOFF_TTL_SECONDS)
 
 
 class ByokSessionRequest(BaseModel):
@@ -141,6 +147,21 @@ def paid_page_response() -> FileResponse:
     return response
 
 
+def secure_handoff_html(body: str, *, status_code: int = 200) -> HTMLResponse:
+    response = HTMLResponse(body, status_code=status_code)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+    return response
+
+
 def ensure_commercial_hosted_runnable(app_config: dict) -> None:
     status = app_config.get("status")
     if status not in core.RUNNABLE_STATUSES:
@@ -187,7 +208,7 @@ def resolve_byok_package(slug: str, buyer_token: str | None, *, request: Request
 
 
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.5.1-stripe-single-claim")
+app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.6.0-browser-handoff")
 
 
 @app.get("/health")
@@ -211,7 +232,7 @@ def creator_studio_options() -> dict:
     options["manual_paid_hosted_entitlement"] = "BUY_ONCE_OR_SUBSCRIPTION__HOSTED__BYOK_ONLY"
     options["byok_credential_transport"] = "EPHEMERAL_PROCESS_MEMORY_HTTPONLY_COOKIE"
     options["buyer_entitlement_transport"] = "SIGNED_HTTPONLY_COOKIE_WITH_LEGACY_BEARER_FALLBACK"
-    options["stripe_auto_handoff"] = "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_V0"
+    options["stripe_auto_handoff"] = "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_BROWSER_TRANSFER_V1"
     return options
 
 
@@ -230,7 +251,7 @@ def checkout_complete(slug: str, session_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Unknown app") from None
     ensure_commercial_hosted_runnable(app_config)
     if (app_config.get("access") or {}).get("mode") != "BUY_ONCE":
-        raise HTTPException(status_code=503, detail="Automatic Checkout handoff v0 supports BUY_ONCE only")
+        raise HTTPException(status_code=503, detail="Automatic Checkout handoff supports BUY_ONCE only")
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Stripe Checkout verification is not configured")
     if len(ENTITLEMENT_COOKIE_SECRET) < 32:
@@ -272,6 +293,39 @@ def checkout_complete(slug: str, session_id: str, request: Request):
     if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
         raise HTTPException(status_code=409, detail="Checkout fulfillment did not establish an active entitlement")
 
+    ticket = handoffs.issue(package_id=package_id, payment_ref=payment_ref)
+    response = RedirectResponse(
+        url=f"/checkout/handoff/{slug}?ticket={quote(ticket, safe='')}",
+        status_code=303,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.get("/checkout/handoff/{slug}")
+def checkout_handoff(slug: str, ticket: str, request: Request):
+    require_secure_transport(request)
+    try:
+        core.registry.get(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown app") from None
+    activate_url = f"/checkout/activate/{quote(slug, safe='')}?ticket={quote(ticket, safe='')}"
+    body = f"""<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title>
+<style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}}main{{max-width:720px;margin:auto;padding:40px 28px}}h1{{font-size:32px}}p{{font-size:18px;line-height:1.65;color:#555}}.card{{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}}a{{display:block;background:#111;color:#fff;text-decoration:none;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}}small{{display:block;margin-top:20px;color:#777;line-height:1.5}}</style></head>
+<body><main><h1>購入確認が完了しました</h1><div class="card"><p><strong>Safariでこの画面を開いてから</strong>、下のボタンを押してください。</p><p>アプリ内ブラウザの場合は、Safariアイコン／「Safariで開く」を使ってこの画面をSafariへ移してください。</p><a href="{html.escape(activate_url, quote=True)}">この端末でAIを使う</a><small>この受け渡しリンクは約10分・1回だけ有効です。購入者コードを入力する必要はありません。</small></div></main></body></html>"""
+    return secure_handoff_html(body)
+
+
+@app.get("/checkout/activate/{slug}")
+def checkout_activate(slug: str, ticket: str, request: Request):
+    require_secure_transport(request)
+    payment_ref = handoffs.consume(package_id=slug, ticket=ticket)
+    if not payment_ref:
+        raise HTTPException(status_code=409, detail="This browser handoff link is invalid, expired, or already used")
+    if not entitlements.authorize_payment(package_id=slug, payment_ref=payment_ref):
+        raise HTTPException(status_code=403, detail="Buyer access is no longer active")
     response = RedirectResponse(url=f"/a/{slug}", status_code=303)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
