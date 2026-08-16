@@ -57,7 +57,7 @@
   const $ = (id) => document.getElementById(id);
   const slug = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
   const storageKey = `webai-entitlement:${slug}`;
-  const history = [];
+  const conversationHistory = [];
   let unlocked = false;
 
   function add(role, text) {
@@ -73,7 +73,7 @@
     const token = params.get('access');
     if (token) {
       sessionStorage.setItem(storageKey, token);
-      history.replaceState(null, '', location.pathname + location.search);
+      window.history.replaceState(null, '', location.pathname + location.search);
     }
     const saved = sessionStorage.getItem(storageKey) || '';
     if (saved) $('access-token').value = saved;
@@ -113,7 +113,7 @@
     if (!unlocked) return;
     const apiKey = $('api-key').value.trim();
     if (!apiKey) { add('system', 'BYOKを使うにはOpenAI API Keyを入力してください。'); return; }
-    const prior = history.slice();
+    const prior = conversationHistory.slice();
     add('user', text);
     $('input').value = '';
     $('input').disabled = true;
@@ -132,8 +132,8 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || 'AIへの接続に失敗しました');
       add('assistant', data.text);
-      history.push({role:'user', content:text});
-      history.push({role:'assistant', content:data.text});
+      conversationHistory.push({role:'user', content:text});
+      conversationHistory.push({role:'assistant', content:data.text});
     } catch (err) {
       add('system', err.message || 'エラーが発生しました');
     } finally {
