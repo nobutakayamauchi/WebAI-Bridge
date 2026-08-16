@@ -23,13 +23,25 @@
     },
     "access": {
       "type": "object",
-      "required": ["mode", "currency", "price_amount_minor", "commercial_enforcement"],
+      "required": ["mode", "currency", "price_amount_minor", "commercial_enforcement", "checkout"],
       "properties": {
         "mode": {"enum": ["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"]},
         "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
         "price_amount_minor": {"type": "integer", "minimum": 0},
         "included_runs": {"type": "integer", "minimum": 0},
-        "commercial_enforcement": {"type": "string"}
+        "commercial_enforcement": {"type": "string"},
+        "checkout": {
+          "type": "object",
+          "required": ["provider", "setup_mode", "payment_link_url", "fulfillment", "entitlement_verification"],
+          "properties": {
+            "provider": {"enum": ["NONE", "STRIPE_PAYMENT_LINK"]},
+            "setup_mode": {"enum": ["NONE", "SELF_SETUP", "ASSISTED_SETUP"]},
+            "payment_link_url": {"type": "string", "maxLength": 2048},
+            "fulfillment": {"enum": ["NONE", "MANUAL_HANDOFF", "WEBHOOK_ENTITLEMENT"]},
+            "entitlement_verification": {"enum": ["NOT_REQUIRED", "NOT_IMPLEMENTED", "STRIPE_VERIFIED"]}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": true
     },
