@@ -40,7 +40,11 @@
     "allowed_models": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
   },
   "delivery": {
-    "mode": "HOSTED_ONLY"
+    "mode": "HOSTED_ONLY",
+    "portable_protection": "NOT_APPLICABLE",
+    "seat_limit": 0,
+    "copy_protection_guarantee": "HOSTED_BOUNDARY",
+    "portable_copy_risk_acknowledged": false
   },
   "ui": {
     "welcome": "Migration Kitの最小動作確認用AIです。"
