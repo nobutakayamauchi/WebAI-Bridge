@@ -7,6 +7,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 
 import app as core
+from commercial_studio import adapt_manual_hosted_entitlement
 from entitlements import EntitlementStore
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -14,6 +15,17 @@ ENTITLEMENT_DB = Path(os.getenv("WEB_AI_ENTITLEMENT_DB", BASE_DIR / ".runtime" /
 PAID_PAGE = BASE_DIR / "static" / "paid.html"
 entitlements = EntitlementStore(ENTITLEMENT_DB)
 SUPPORTED_MANUAL_ACCESS = {"BUY_ONCE", "SUBSCRIPTION"}
+
+
+def insecure_http_allowed() -> bool:
+    return os.getenv("WEB_AI_ALLOW_INSECURE_HTTP", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def require_secure_transport(request: Request) -> None:
+    if insecure_http_allowed():
+        return
+    if request.url.scheme.lower() != "https":
+        raise HTTPException(status_code=426, detail="HTTPS is required for buyer credentials and BYOK")
 
 
 def ensure_commercial_hosted_runnable(app_config: dict) -> None:
@@ -76,12 +88,15 @@ def creator_studio_page():
 
 @app.get("/api/studio/options")
 def creator_studio_options() -> dict:
-    return core.creator_studio_options()
+    options = core.creator_studio_options()
+    options["manual_paid_hosted_entitlement"] = "BUY_ONCE_OR_SUBSCRIPTION__HOSTED__BYOK_ONLY"
+    return options
 
 
 @app.post("/api/studio/validate")
 def creator_studio_validate(payload: core.StudioDraft, request: Request) -> dict:
-    return core.creator_studio_validate(payload=payload, request=request)
+    result = core.creator_studio_validate(payload=payload, request=request)
+    return adapt_manual_hosted_entitlement(result)
 
 
 @app.get("/apps/{slug}/public-config")
@@ -95,6 +110,8 @@ def paid_public_config(
         app_config = core.registry.get(slug)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
+    if (app_config.get("access") or {}).get("mode") != "FREE":
+        require_secure_transport(request)
     require_entitlement(app_config, buyer_token)
     return core.public_config(app_config)
 
@@ -120,6 +137,7 @@ def paid_chat(
     byok_api_key: str | None = Header(default=None, alias="X-Provider-API-Key"),
     buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
 ) -> dict:
+    require_secure_transport(request)
     try:
         app_config = core.registry.get(payload.slug)
     except KeyError:
