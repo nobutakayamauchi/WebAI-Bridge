@@ -16,11 +16,12 @@ def token_hash(token: str) -> str:
 
 
 class EntitlementStore:
-    """Minimal persistent bearer-entitlement store for manual paid-hosted v0.
+    """Persistent paid-hosted entitlement authority.
 
-    Only a SHA-256 digest of the high-entropy bearer token is stored. The plaintext
-    token is returned exactly once at issuance time and must be handed to the buyer
-    out-of-band after the operator verifies payment.
+    Legacy/manual flow stores only a SHA-256 digest of a high-entropy bearer token.
+    Automatic Stripe handoff can authorize the same entitlement by its verified
+    package/payment_ref pair through a signed HttpOnly browser cookie. Revocation
+    therefore remains authoritative for both transport modes.
     """
 
     def __init__(self, path: Path):
@@ -113,6 +114,32 @@ class EntitlementStore:
                 (digest,),
             ).fetchone()
         if row is None or row["package_id"] != package_id or row["status"] != "active":
+            return False
+        expires_at = row["expires_at"]
+        return expires_at is None or int(expires_at) > current
+
+    def authorize_payment(
+        self,
+        *,
+        package_id: str,
+        payment_ref: str | None,
+        now: int | None = None,
+    ) -> bool:
+        if not package_id or not payment_ref:
+            return False
+        current = int(time.time()) if now is None else int(now)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, expires_at
+                FROM entitlements
+                WHERE package_id=? AND payment_ref=?
+                ORDER BY issued_at DESC
+                LIMIT 1
+                """,
+                (package_id, payment_ref),
+            ).fetchone()
+        if row is None or row["status"] != "active":
             return False
         expires_at = row["expires_at"]
         return expires_at is None or int(expires_at) > current
