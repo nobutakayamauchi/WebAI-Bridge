@@ -16,6 +16,7 @@ ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 AccessMode = Literal["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"]
 PayerMode = Literal["BYOK", "PLATFORM_CREDIT"]
 DeliveryMode = Literal["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"]
+PortableProtection = Literal["LICENSE_ONLY", "ACTIVATION_REQUIRED"]
 CheckoutSetupMode = Literal["SELF_SETUP", "ASSISTED_SETUP"]
 
 
@@ -51,6 +52,9 @@ class StudioDraft(BaseModel):
     default_model: str = Field(min_length=1, max_length=200)
     allowed_models: list[str] = Field(min_length=1, max_length=32)
     delivery_mode: DeliveryMode = "HOSTED_ONLY"
+    portable_protection: PortableProtection = "LICENSE_ONLY"
+    portable_seat_limit: int = Field(default=1, ge=1, le=100_000)
+    portable_copy_risk_acknowledged: bool = False
     welcome: str = Field(default="", max_length=500)
 
     max_input_chars: int = Field(default=12_000, ge=1, le=1_000_000)
@@ -142,8 +146,15 @@ def build_package(
     if unknown_models:
         errors.append(f"Models missing from the current pricing registry: {', '.join(unknown_models)}")
 
-    if draft.delivery_mode != "HOSTED_ONLY":
-        warnings.append("Portable delivery exposes the exported Instructions and any bundled Knowledge to the recipient.")
+    portable = draft.delivery_mode != "HOSTED_ONLY"
+    if portable:
+        if not draft.portable_copy_risk_acknowledged:
+            errors.append("Portable delivery requires explicit acknowledgement that technical copy prevention is not guaranteed.")
+        warnings.append("Portable delivery exposes/copies the exported Instructions and any bundled Knowledge to the recipient.")
+        if draft.portable_protection == "LICENSE_ONLY":
+            warnings.append("LICENSE_ONLY portable delivery relies on license/terms; technical copy prevention is NOT GUARANTEED.")
+        elif draft.portable_protection == "ACTIVATION_REQUIRED":
+            warnings.append("Portable activation is contract-only in v0; entitlement/activation enforcement is NOT IMPLEMENTED and must not be sold as technically protected yet.")
 
     if errors:
         raise StudioValidationError(errors, warnings)
@@ -162,6 +173,23 @@ def build_package(
             "payment_link_url": draft.stripe_payment_link_url,
             "fulfillment": "MANUAL_HANDOFF",
             "entitlement_verification": "NOT_IMPLEMENTED",
+        }
+
+    if portable:
+        delivery = {
+            "mode": draft.delivery_mode,
+            "portable_protection": draft.portable_protection,
+            "seat_limit": draft.portable_seat_limit,
+            "copy_protection_guarantee": "NOT_GUARANTEED" if draft.portable_protection == "LICENSE_ONLY" else "PLANNED_ENTITLEMENT",
+            "portable_copy_risk_acknowledged": True,
+        }
+    else:
+        delivery = {
+            "mode": "HOSTED_ONLY",
+            "portable_protection": "NOT_APPLICABLE",
+            "seat_limit": 0,
+            "copy_protection_guarantee": "HOSTED_BOUNDARY",
+            "portable_copy_risk_acknowledged": False,
         }
 
     package = {
@@ -194,7 +222,7 @@ def build_package(
             "default_model": draft.default_model,
             "allowed_models": draft.allowed_models,
         },
-        "delivery": {"mode": draft.delivery_mode},
+        "delivery": delivery,
         "ui": {"welcome": draft.welcome or f"{draft.display_name}に質問してください。"},
         "usage": {
             "max_input_chars": draft.max_input_chars,
