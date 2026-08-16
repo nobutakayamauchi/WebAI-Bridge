@@ -36,11 +36,11 @@
   <section id="billing">
     <label>推論代の支払い元<select id="payer"></select></label>
     <div id="byok-connect" hidden>
-      <label>OpenAI API Key（一時接続後、この入力欄から即時消去します）<input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></label>
-      <button id="connect-byok" type="button">APIキーを一時接続</button>
+      <label>OpenAI API Key（接続すると、この入力欄は消えます）<input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></label>
+      <button id="connect-byok" type="button">APIを接続</button>
     </div>
     <div id="byok-status" hidden>
-      <strong>✓ APIキーを一時接続済み</strong>
+      <strong>✓ API接続済み</strong>
       <span id="byok-expiry"></span>
       <button id="forget-byok" class="secondary" type="button">キーを忘れる</button>
     </div>
@@ -137,7 +137,7 @@
     if (payer.value === 'BYOK') await refreshByokStatus();
   }
   async function submitMessage(text) {
-    if (payer.value === 'BYOK' && !byokConnected) { add('system', '先にAPIキーを一時接続してください。'); return; }
+    if (payer.value === 'BYOK' && !byokConnected) { add('system', '先にAPIを接続してください。'); return; }
     const prior = history.slice();
     add('user', text);
     input.value = '';
@@ -152,7 +152,7 @@
       }
       add('assistant', data.text);
       history.push({role: 'user', content: text});
-      history.push({role: 'assistant', content: data.text});
+      history.push({role: 'assistant', content:data.text});
     } catch (err) {
       add('system', err.message || 'エラーが発生しました');
     } finally {

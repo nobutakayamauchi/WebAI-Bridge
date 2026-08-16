@@ -64,6 +64,17 @@ def clear_byok_cookie(response: Response, *, slug: str) -> None:
     )
 
 
+def free_page_response() -> FileResponse:
+    response = FileResponse(core.STATIC_DIR / "index.html")
+    # The free dogfood page evolves quickly during real-device testing. Do not let
+    # mobile Safari reuse an older credential UI after a runtime revision changes.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 def paid_page_response() -> FileResponse:
     response = FileResponse(PAID_PAGE)
     response.headers["Cache-Control"] = "no-store"
@@ -176,7 +187,7 @@ def paid_app_page(slug: str, request: Request):
         raise HTTPException(status_code=404, detail="Unknown app") from None
     ensure_commercial_hosted_runnable(app_config)
     if (app_config.get("access") or {}).get("mode") == "FREE":
-        return FileResponse(core.STATIC_DIR / "index.html")
+        return free_page_response()
     require_secure_transport(request)
     if not PAID_PAGE.exists():
         raise HTTPException(status_code=503, detail="Paid hosted UI is missing")
