@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>WebAI Bridge</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f7f8; color: #111; min-height: 100dvh; }
+    main { width: min(760px, 100%); min-height: 100dvh; margin: 0 auto; background: #fff; display: flex; flex-direction: column; }
+    header { padding: 16px; border-bottom: 1px solid #ddd; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    #welcome, #billing-note { margin: 4px 0 0; font-size: 14px; color: #555; }
+    #billing { padding: 10px 16px; border-bottom: 1px solid #eee; display: grid; gap: 8px; }
+    #billing label { font-size: 14px; }
+    #api-key { width: 100%; min-height: 42px; border: 1px solid #bbb; border-radius: 10px; padding: 9px 11px; font: inherit; }
+    #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 88%; padding: 11px 13px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+    .user { align-self: flex-end; background: #111; color: #fff; }
+    .assistant { align-self: flex-start; background: #eee; color: #111; }
+    .system { align-self: center; background: transparent; color: #777; font-size: 13px; padding: 4px; }
+    form { display: flex; gap: 8px; padding: 12px max(12px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); border-top: 1px solid #ddd; background: #fff; }
+    textarea { flex: 1; resize: none; min-height: 44px; max-height: 140px; border: 1px solid #bbb; border-radius: 12px; padding: 11px; font: inherit; }
+    button { min-width: 72px; border: 0; border-radius: 12px; padding: 0 14px; font: inherit; font-weight: 700; background: #111; color: #fff; }
+    button:disabled, textarea:disabled { opacity: .55; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <header><h1 id="title">WebAI Bridge</h1><p id="welcome">読み込み中…</p></header>
+  <section id="billing">
+    <label>推論代の支払い元<select id="payer"></select></label>
+    <label id="api-key-wrap" hidden>OpenAI API Key（この画面では保存しません）<input id="api-key" type="password" autocomplete="off" spellcheck="false"></label>
+    <p id="billing-note"></p>
+  </section>
+  <section id="messages" aria-live="polite"></section>
+  <form id="form"><textarea id="input" rows="1" placeholder="メッセージを入力" autocomplete="off"></textarea><button id="send" type="submit">送信</button></form>
+</main>
+<script>
+(() => {
+  const slug = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+  const title = document.getElementById('title'), welcome = document.getElementById('welcome'), messages = document.getElementById('messages'), form = document.getElementById('form'), input = document.getElementById('input'), send = document.getElementById('send'), payer = document.getElementById('payer'), apiKey = document.getElementById('api-key'), apiKeyWrap = document.getElementById('api-key-wrap'), billingNote = document.getElementById('billing-note');
+  const history = [];
+  function add(role, text) { const el = document.createElement('div'); el.className = `msg ${role}`; el.textContent = text; messages.appendChild(el); messages.scrollTop = messages.scrollHeight; }
+  function syncPayerUI() { const byok = payer.value === 'BYOK'; apiKeyWrap.hidden = !byok; billingNote.textContent = byok ? 'API利用料はあなたのAPIアカウント側に発生します。キーはこのページ内メモリだけで使います。' : 'このAIに設定された運営提供クレジットの上限内で実行します。'; }
+  async function loadConfig() { const res = await fetch(`/apps/${encodeURIComponent(slug)}/public-config`); if (!res.ok) throw new Error('設定を読み込めませんでした'); const cfg = await res.json(); title.textContent = cfg.display_name; welcome.textContent = cfg.welcome; payer.replaceChildren(); for (const mode of cfg.allowed_payer_modes) { const option = document.createElement('option'); option.value = mode; option.textContent = mode === 'BYOK' ? '自分のAPIキー（BYOK）' : '運営提供クレジット'; option.selected = mode === cfg.default_payer_mode; payer.appendChild(option); } syncPayerUI(); }
+  async function submitMessage(text) { const prior = history.slice(); add('user', text); input.value = ''; input.disabled = true; send.disabled = true; try { const headers = {'Content-Type': 'application/json'}; if (payer.value === 'BYOK') { const key = apiKey.value.trim(); if (!key) throw new Error('BYOKを使うにはAPIキーを入力してください'); headers['X-Provider-API-Key'] = key; } const res = await fetch('/api/chat', {method: 'POST', headers, body: JSON.stringify({slug, message: text, history: prior, payer_mode: payer.value})}); const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.detail || 'AIへの接続に失敗しました'); add('assistant', data.text); history.push({role: 'user', content: text}); history.push({role: 'assistant', content: data.text}); } catch (err) { add('system', err.message || 'エラーが発生しました'); } finally { input.disabled = false; send.disabled = false; input.focus(); } }
+  payer.addEventListener('change', syncPayerUI); form.addEventListener('submit', (event) => { event.preventDefault(); const text = input.value.trim(); if (text) submitMessage(text); }); loadConfig().catch(err => add('system', err.message));
+})();
+</script>
+</body>
+</html>

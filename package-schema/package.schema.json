@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webai-bridge.local/schema/package.schema.json",
+  "title": "WebAI Bridge AI Package",
+  "type": "object",
+  "required": ["id", "slug", "display_name", "instructions_file", "billing", "routing", "delivery", "usage"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "display_name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "status": {"type": "string"},
+    "instructions_file": {"type": "string", "minLength": 1},
+    "knowledge": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "vector_store_env": {"type": "string"},
+        "reserve_tokens": {"type": "integer", "minimum": 0},
+        "platform_tool_reserve_usd_micros": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "access": {
+      "type": "object",
+      "properties": {
+        "mode": {"enum": ["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"]},
+        "included_runs": {"type": "integer", "minimum": 0},
+        "commercial_enforcement": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "billing": {
+      "type": "object",
+      "required": ["allowed_payer_modes", "default_payer_mode"],
+      "properties": {
+        "allowed_payer_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"enum": ["BYOK", "PLATFORM_CREDIT", "USER_WALLET", "CREATOR_PAYS", "SPONSORED", "HYBRID"]}
+        },
+        "default_payer_mode": {"type": "string"},
+        "platform_credit": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "budget_id_env": {"type": "string"},
+            "hard_limit_usd_micros": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "routing": {
+      "type": "object",
+      "required": ["default_model", "allowed_models"],
+      "properties": {
+        "policy": {"type": "string"},
+        "default_model": {"type": "string", "minLength": 1},
+        "allowed_models": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "delivery": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"]}
+      },
+      "additionalProperties": true
+    },
+    "ui": {"type": "object", "additionalProperties": true},
+    "usage": {
+      "type": "object",
+      "required": ["max_input_chars", "max_history_messages", "max_output_tokens"],
+      "properties": {
+        "max_input_chars": {"type": "integer", "minimum": 1},
+        "max_history_messages": {"type": "integer", "minimum": 0},
+        "max_output_tokens": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

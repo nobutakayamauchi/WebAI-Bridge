@@ -1,0 +1,44 @@
+{
+  "id": "migration-fixture-ai",
+  "slug": "migration-fixture-ai",
+  "display_name": "Migration Fixture AI",
+  "description": "WebAI Bridgeの最小Dogfood用AIです。",
+  "status": "dogfood",
+  "instructions_file": "apps/migration-fixture-ai.instructions.md",
+  "knowledge": {
+    "enabled": false,
+    "vector_store_env": "MIGRATION_FIXTURE_VECTOR_STORE_ID",
+    "reserve_tokens": 0,
+    "platform_tool_reserve_usd_micros": 0
+  },
+  "access": {
+    "mode": "FREE",
+    "included_runs": 0,
+    "commercial_enforcement": "NOT_IMPLEMENTED"
+  },
+  "billing": {
+    "allowed_payer_modes": ["BYOK", "PLATFORM_CREDIT"],
+    "default_payer_mode": "BYOK",
+    "platform_credit": {
+      "enabled": true,
+      "budget_id_env": "MIGRATION_FIXTURE_BUDGET_ID",
+      "hard_limit_usd_micros": 500000
+    }
+  },
+  "routing": {
+    "policy": "cost_aware_v0",
+    "default_model": "gpt-5.6-luna",
+    "allowed_models": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
+  },
+  "delivery": {
+    "mode": "HOSTED_ONLY"
+  },
+  "ui": {
+    "welcome": "Migration Kitの最小動作確認用AIです。"
+  },
+  "usage": {
+    "max_input_chars": 12000,
+    "max_history_messages": 12,
+    "max_output_tokens": 2048
+  }
+}
