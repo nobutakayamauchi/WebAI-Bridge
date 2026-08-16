@@ -24,6 +24,7 @@
     .assistant { align-self:flex-start; background:#eee; }
     .system { align-self:center; color:#777; font-size:13px; padding:4px; }
     form { display:flex; gap:8px; padding:12px max(12px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); border-top:1px solid #ddd; }
+    @media (pointer: coarse) { form { padding-bottom:calc(32px + env(safe-area-inset-bottom)); } }
     textarea { flex:1; resize:none; min-height:44px; max-height:140px; border:1px solid #bbb; border-radius:12px; padding:11px; font:inherit; }
     button:disabled, textarea:disabled, input:disabled { opacity:.5; }
     [hidden] { display:none !important; }
