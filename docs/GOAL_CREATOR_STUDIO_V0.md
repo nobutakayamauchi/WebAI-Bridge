@@ -6,7 +6,7 @@ Status: `FROZEN_SUBJECT / BOUNDED_CHALLENGER`
 
 ## Protected outcome
 
-A creator/operator can define a second WebAI Bridge AI Package from a smartphone without hand-writing package JSON, while preserving the existing access-price / checkout / payer / budget / model safety boundaries and without introducing a new admin SaaS or unauthenticated runtime-write surface.
+A creator/operator can define a second WebAI Bridge AI Package from a smartphone without hand-writing package JSON, while preserving the existing access-price / checkout / payer / budget / model / distribution-authority safety boundaries and without introducing a new admin SaaS or unauthenticated runtime-write surface.
 
 ## Frozen workload
 
@@ -20,11 +20,12 @@ The challenger must handle the same bounded package contract for:
 6. Knowledge binding with explicit platform-funded tool-cost reserve.
 7. Free / allowance-then-paid / paid-intent access policy with an explicit JPY price intent.
 8. Hosted-only / portable / both delivery intent.
-9. Allowed/default model policy bound to the current pricing registry.
-10. Smartphone-sized form input.
-11. Canonical package-schema validation.
-12. Export of package JSON + Instructions file.
-13. No runtime config mutation merely because validation succeeded.
+9. Portable delivery that explicitly distinguishes license-only copy risk from future activation-required protection.
+10. Allowed/default model policy bound to the current pricing registry.
+11. Smartphone-sized form input.
+12. Canonical package-schema validation.
+13. Export of package JSON + Instructions file.
+14. No runtime config mutation merely because validation succeeded.
 
 ## Current discovery sweep
 
@@ -75,6 +76,12 @@ Fails current Raison d'être: Stripe Payment Links already provide the external 
 
 Result: `REJECT`.
 
+### Candidate F — promise DRM-style copy prevention for exported ZIPs
+
+Fails reality gate: once plaintext package contents and a modifiable runtime are delivered into a buyer-controlled environment, WebAI Bridge cannot honestly guarantee that copying, inspection, modification, or Safety Kernel removal is impossible.
+
+Result: `REJECT CLAIM / SPLIT DISTRIBUTION CLASSES`.
+
 ## Raison d'être Destroy result
 
 ```text
@@ -83,7 +90,7 @@ EXTERNALIZE     -> checkout yes: Stripe Payment Links
 COMPOSE         -> yes; existing runtime + schema + pricing registry + external checkout metadata
 MANUAL_BOUNDED  -> yes; operator still deploys exported files and paid fulfillment is manual
 GLUE            -> yes; thin UI + validation endpoint
-IRREDUCIBLE_BUILD -> only package-builder semantics, checkout metadata validation and mobile form
+IRREDUCIBLE_BUILD -> package-builder semantics, checkout metadata, distribution-risk contract and mobile form
 ```
 
 The Creator Studio does **not** become a separate service in v0.
@@ -98,6 +105,9 @@ Hard rules:
 - Validation does not accept/store provider API keys.
 - Validation does not accept/store Stripe secret keys or card data.
 - `ACCESS PRICE != INFERENCE COST` remains explicit in the package contract.
+- `PAYMENT LINK != VERIFIED ENTITLEMENT` remains explicit.
+- `PORTABLE != SECRET` remains explicit.
+- `LICENSE TERMS != TECHNICAL COPY CONTROL` remains explicit.
 - FREE access must have a zero access price.
 - Any paid-access intent must have a positive access price.
 - Paid access is intent only until commercial enforcement exists.
@@ -108,7 +118,10 @@ Hard rules:
 - PLATFORM_CREDIT requires explicit budget identity + positive hard cap.
 - Platform-funded Knowledge requires explicit positive tool-cost reserve.
 - Default model must be allowed and every allowed model must exist in current pricing evidence.
-- Portable delivery emits an explicit exposure warning.
+- Portable delivery requires explicit creator acknowledgement that technical copy prevention is not guaranteed.
+- `LICENSE_ONLY` portable packages must state `copy_protection_guarantee = NOT_GUARANTEED`.
+- `ACTIVATION_REQUIRED` is contract-only in v0 and must state `copy_protection_guarantee = PLANNED_ENTITLEMENT` until entitlement runtime exists.
+- Where secrecy or mandatory Safety enforcement is required, `HOSTED_ONLY` is the recommended/current enforceable boundary.
 
 ## METEOR cases
 
@@ -130,11 +143,14 @@ Attack at minimum:
 14. ASSISTED_SETUP with link pending but no explicit warning.
 15. Payment Link being falsely treated as verified entitlement.
 16. Paid mode falsely claiming enforcement.
-17. Portable package hiding the fact that Instructions become visible.
-18. Successful validation mutating live runtime registry.
-19. Oversized Instructions/body.
-20. Checked-in example/fixture drifting from canonical schema.
-21. Regression of existing BYOK/platform-credit chat tests.
+17. Portable package created without copy-risk acknowledgement.
+18. LICENSE_ONLY portable package falsely claiming technical copy protection.
+19. ACTIVATION_REQUIRED being represented as implemented/enforced in v0.
+20. Portable package hiding the fact that Instructions/Knowledge become copyable/inspectable.
+21. Successful validation mutating live runtime registry.
+22. Oversized Instructions/body.
+23. Checked-in example/fixture drifting from canonical schema.
+24. Regression of existing BYOK/platform-credit chat tests.
 
 ## Commerce finding that reopened the merge gate
 
@@ -145,7 +161,27 @@ SELF_SETUP     -> creator configures Stripe Payment Link themselves -> lower-cos
 ASSISTED_SETUP -> setup support helps with product/price/link/post-payment flow -> support-priced service path
 ```
 
-This is now frozen in `docs/BILLING_AND_CHECKOUT.md` and represented in package checkout metadata without adding payment execution authority to Creator Studio.
+This is frozen in `docs/BILLING_AND_CHECKOUT.md` and represented in package checkout metadata without adding payment execution authority to Creator Studio.
+
+## Distribution-security finding that reopened the merge gate again
+
+A public discussion surfaced a separate risk: a sold ZIP can be copied after purchase. This finding is valid and was previously under-modeled.
+
+The correction is not fake DRM. It is an explicit distribution split:
+
+```text
+HOSTED_ONLY
+  -> strongest current secrecy / entitlement / Safety boundary
+
+PORTABLE + LICENSE_ONLY
+  -> buyer freedom, no technical anti-copy guarantee
+
+PORTABLE + ACTIVATION_REQUIRED
+  -> future entitlement/seat enforcement intent
+  -> NOT IMPLEMENTED in thin v0
+```
+
+Canonical detail: `docs/DISTRIBUTION_SECURITY.md`.
 
 ## Completion gate for this /goal
 
@@ -153,15 +189,17 @@ Stop at merge-ready when all are true:
 
 - thin UI exists and is smartphone-oriented;
 - Studio is disabled by default;
-- generated package passes canonical schema + semantic/economic gates;
+- generated package passes canonical schema + semantic/economic/distribution gates;
 - access price is explicit and independent from inference payer;
 - paid checkout metadata distinguishes SELF_SETUP from ASSISTED_SETUP;
 - Payment Link is not conflated with verified entitlement;
+- portable delivery cannot pass without explicit copy-risk acknowledgement;
+- package contract never claims guaranteed technical anti-copy protection for portable delivery;
 - two export files are produced without server persistence;
-- tests cover the METEOR economic/authority/checkout cases;
+- tests cover METEOR economic/authority/checkout/distribution cases;
 - existing runtime regression remains green;
 - CI is green;
 - PR is mergeable;
-- no claim of deployment/mobile/provider/payment validation is made without runtime evidence.
+- no claim of deployment/mobile/provider/payment/activation validation is made without runtime evidence.
 
 If any material blocker appears before that point, stop and report the blocker instead of weakening the boundary.
