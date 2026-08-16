@@ -86,11 +86,9 @@ def ensure_commercial_hosted_runnable(app_config: dict) -> None:
     status = app_config.get("status")
     if status not in core.RUNNABLE_STATUSES:
         raise HTTPException(status_code=409, detail="AI Package is not activated for runtime use")
-
     delivery = app_config.get("delivery") or {}
     if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
         raise HTTPException(status_code=503, detail="Portable runtime execution is not implemented")
-
     access = app_config.get("access") or {}
     mode = access.get("mode")
     if mode == "FREE":
@@ -99,7 +97,6 @@ def ensure_commercial_hosted_runnable(app_config: dict) -> None:
         raise HTTPException(status_code=503, detail="This paid access mode is not supported by manual hosted entitlement v0")
     if access.get("commercial_enforcement") != "ENTITLEMENT_ENFORCED":
         raise HTTPException(status_code=503, detail="Paid hosted entitlement enforcement is not activated")
-
     billing = app_config.get("billing") or {}
     if billing.get("allowed_payer_modes") != ["BYOK"] or billing.get("default_payer_mode") != "BYOK":
         raise HTTPException(status_code=503, detail="Paid hosted v0 requires BYOK-only inference to avoid unallocated subsidy risk")
@@ -126,7 +123,6 @@ def resolve_byok_package(slug: str, buyer_token: str | None) -> dict:
 
 
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-
 app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.4.0-ephemeral-byok")
 
 
@@ -160,11 +156,7 @@ def creator_studio_validate(payload: core.StudioDraft, request: Request) -> dict
 
 
 @app.get("/apps/{slug}/public-config")
-def paid_public_config(
-    slug: str,
-    request: Request,
-    buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
-) -> dict:
+def paid_public_config(slug: str, request: Request, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     core.enforce_rate_limit(request)
     try:
         app_config = core.registry.get(slug)
@@ -192,12 +184,7 @@ def paid_app_page(slug: str, request: Request):
 
 
 @app.post("/api/byok/session")
-def create_byok_session(
-    payload: ByokSessionRequest,
-    request: Request,
-    response: Response,
-    buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
-) -> dict:
+def create_byok_session(payload: ByokSessionRequest, request: Request, response: Response, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
     core.enforce_rate_limit(request)
     resolve_byok_package(payload.slug, buyer_token)
@@ -215,11 +202,7 @@ def create_byok_session(
 
 
 @app.get("/api/byok/session/{slug}")
-def byok_session_status(
-    slug: str,
-    request: Request,
-    buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
-) -> dict:
+def byok_session_status(slug: str, request: Request, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
     resolve_byok_package(slug, buyer_token)
     token = request.cookies.get(byok_cookie_name(slug))
@@ -229,12 +212,7 @@ def byok_session_status(
 
 
 @app.delete("/api/byok/session/{slug}")
-def forget_byok_session(
-    slug: str,
-    request: Request,
-    response: Response,
-    buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
-) -> dict:
+def forget_byok_session(slug: str, request: Request, response: Response, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
     resolve_byok_package(slug, buyer_token)
     token = request.cookies.get(byok_cookie_name(slug))
@@ -257,7 +235,6 @@ def paid_chat(
         raise HTTPException(status_code=404, detail="Unknown app") from None
     require_entitlement(app_config, buyer_token)
     payer_mode = core.resolve_payer_mode(payload, app_config)
-
     byok_api_key = None
     if payer_mode == "BYOK":
         if legacy_byok_api_key:
@@ -268,11 +245,8 @@ def paid_chat(
             session_token = request.cookies.get(byok_cookie_name(payload.slug))
             byok_api_key = byok_sessions.resolve(package_id=payload.slug, token=session_token)
             if not byok_api_key:
-                raise HTTPException(status_code=401, detail="BYOK session is missing or expired; reconnect your provider key")
+                raise HTTPException(status_code=402, detail="BYOK session is missing or expired; reconnect your provider key")
     return core.chat(payload=payload, request=request, byok_api_key=byok_api_key)
 
 
 # Intentionally no root mount of core.app here.
-# Every externally reachable route on the commercial entrypoint is explicit so a
-# routing-order/path-normalization mistake cannot silently fall through to a core
-# chat route that lacks buyer entitlement context.
