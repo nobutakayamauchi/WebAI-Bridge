@@ -6,22 +6,23 @@ Status: `FROZEN_SUBJECT / BOUNDED_CHALLENGER`
 
 ## Protected outcome
 
-A creator/operator can define a second WebAI Bridge AI Package from a smartphone without hand-writing package JSON, while preserving the existing payer/budget/model safety boundaries and without introducing a new admin SaaS or unauthenticated runtime-write surface.
+A creator/operator can define a second WebAI Bridge AI Package from a smartphone without hand-writing package JSON, while preserving the existing access-price / payer / budget / model safety boundaries and without introducing a new admin SaaS or unauthenticated runtime-write surface.
 
 ## Frozen workload
 
 The challenger must handle the same bounded package contract for:
 
 1. BYOK-only free hosted AI.
-2. BYOK + bounded PLATFORM_CREDIT AI.
-3. Knowledge binding with explicit platform-funded tool-cost reserve.
-4. Free / allowance-then-paid / paid-intent access policy.
-5. Hosted-only / portable / both delivery intent.
-6. Allowed/default model policy bound to the current pricing registry.
-7. Smartphone-sized form input.
-8. Canonical package-schema validation.
-9. Export of package JSON + Instructions file.
-10. No runtime config mutation merely because validation succeeded.
+2. Paid-access AI whose access price is separate from BYOK inference cost.
+3. BYOK + bounded PLATFORM_CREDIT AI.
+4. Knowledge binding with explicit platform-funded tool-cost reserve.
+5. Free / allowance-then-paid / paid-intent access policy with an explicit JPY price intent.
+6. Hosted-only / portable / both delivery intent.
+7. Allowed/default model policy bound to the current pricing registry.
+8. Smartphone-sized form input.
+9. Canonical package-schema validation.
+10. Export of package JSON + Instructions file.
+11. No runtime config mutation merely because validation succeeded.
 
 ## Current discovery sweep
 
@@ -87,6 +88,9 @@ Hard rules:
 - Validation does not write runtime package files.
 - Validation does not call an AI provider.
 - Validation does not accept/store provider API keys.
+- `ACCESS PRICE != INFERENCE COST` remains explicit in the package contract.
+- FREE access must have a zero access price.
+- Any paid-access intent must have a positive access price.
 - Paid access is intent only until commercial enforcement exists.
 - PLATFORM_CREDIT requires explicit budget identity + positive hard cap.
 - Platform-funded Knowledge requires explicit positive tool-cost reserve.
@@ -106,11 +110,14 @@ Attack at minimum:
 7. Unknown model not present in pricing registry.
 8. Default model not in allowed set.
 9. Allowance mode with zero free runs.
-10. Paid mode falsely claiming enforcement.
-11. Portable package hiding the fact that Instructions become visible.
-12. Successful validation mutating live runtime registry.
-13. Oversized Instructions/body.
-14. Regression of existing BYOK/platform-credit chat tests.
+10. FREE access carrying a non-zero access price.
+11. Paid access with zero price.
+12. Paid access + BYOK being incorrectly coupled or blocked.
+13. Paid mode falsely claiming enforcement.
+14. Portable package hiding the fact that Instructions become visible.
+15. Successful validation mutating live runtime registry.
+16. Oversized Instructions/body.
+17. Regression of existing BYOK/platform-credit chat tests.
 
 ## Completion gate for this /goal
 
@@ -119,6 +126,7 @@ Stop at merge-ready when all are true:
 - thin UI exists and is smartphone-oriented;
 - Studio is disabled by default;
 - generated package passes canonical schema + semantic/economic gates;
+- access price is explicit and independent from inference payer;
 - two export files are produced without server persistence;
 - tests cover the METEOR economic/authority cases;
 - existing runtime regression remains green;
