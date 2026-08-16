@@ -1,0 +1,10 @@
+# Replace ai.example.com with the real DNS name before deployment.
+# With a real hostname pointed at this server, Caddy handles the public HTTPS edge
+# and forwards requests only to the localhost-bound WebAI Bridge service.
+#
+# Do not add request-header logging for X-WebAI-Entitlement or X-Provider-API-Key.
+
+ai.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080
+}

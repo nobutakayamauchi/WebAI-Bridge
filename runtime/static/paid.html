@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>WebAI Bridge</title>
+  <style>
+    :root { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f6f7f8; color:#111; min-height:100dvh; }
+    main { width:min(760px,100%); min-height:100dvh; margin:0 auto; background:#fff; display:flex; flex-direction:column; }
+    header { padding:16px; border-bottom:1px solid #ddd; }
+    h1 { font-size:20px; margin:0 0 6px; }
+    p { margin:5px 0; color:#555; font-size:13px; line-height:1.45; }
+    #access, #billing { padding:12px 16px; border-bottom:1px solid #eee; display:grid; gap:8px; }
+    input { width:100%; min-height:42px; border:1px solid #bbb; border-radius:10px; padding:9px 11px; font:inherit; }
+    button { border:0; border-radius:12px; padding:11px 14px; font:inherit; font-weight:700; background:#111; color:#fff; }
+    #messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+    .msg { max-width:88%; padding:11px 13px; border-radius:14px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
+    .user { align-self:flex-end; background:#111; color:#fff; }
+    .assistant { align-self:flex-start; background:#eee; }
+    .system { align-self:center; color:#777; font-size:13px; padding:4px; }
+    form { display:flex; gap:8px; padding:12px max(12px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); border-top:1px solid #ddd; }
+    textarea { flex:1; resize:none; min-height:44px; max-height:140px; border:1px solid #bbb; border-radius:12px; padding:11px; font:inherit; }
+    button:disabled, textarea:disabled, input:disabled { opacity:.5; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">購入者アクセス</h1>
+    <p id="welcome">購入者用アクセスコードを確認しています。</p>
+  </header>
+
+  <section id="access">
+    <strong>購入者アクセスコード</strong>
+    <input id="access-token" type="password" autocomplete="off" spellcheck="false" placeholder="webai_...">
+    <button id="unlock" type="button">アクセスを確認</button>
+    <p>このコードは購入権そのものです。共有すると相手も利用できます。URLの <code>#access=...</code> で受け取った場合は、このタブの sessionStorage にだけ移してアドレス欄から消します。</p>
+  </section>
+
+  <section id="billing" hidden>
+    <strong>推論用 OpenAI API Key（BYOK）</strong>
+    <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+    <p>推論代はあなたのAPIアカウント側に発生します。キーはこのページのメモリからリクエストごとにWebAI Bridgeサーバーへ送られ、providerへ中継されます。WebAI Bridgeは意図的に永続保存しません。</p>
+  </section>
+
+  <section id="messages" aria-live="polite"></section>
+  <form id="form">
+    <textarea id="input" rows="1" placeholder="メッセージを入力" autocomplete="off" disabled></textarea>
+    <button id="send" type="submit" disabled>送信</button>
+  </form>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const slug = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+  const storageKey = `webai-entitlement:${slug}`;
+  const conversationHistory = [];
+  let unlocked = false;
+
+  function add(role, text) {
+    const el = document.createElement('div');
+    el.className = `msg ${role}`;
+    el.textContent = text;
+    $('messages').appendChild(el);
+    $('messages').scrollTop = $('messages').scrollHeight;
+  }
+
+  function captureFragmentToken() {
+    const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const token = params.get('access');
+    if (token) {
+      sessionStorage.setItem(storageKey, token);
+      window.history.replaceState(null, '', location.pathname + location.search);
+    }
+    const saved = sessionStorage.getItem(storageKey) || '';
+    if (saved) $('access-token').value = saved;
+  }
+
+  function entitlementHeaders() {
+    const token = $('access-token').value.trim();
+    return token ? {'X-WebAI-Entitlement': token} : {};
+  }
+
+  async function unlock() {
+    const token = $('access-token').value.trim();
+    if (!token) { add('system', '購入者アクセスコードを入力してください。'); return; }
+    $('unlock').disabled = true;
+    try {
+      const res = await fetch(`/apps/${encodeURIComponent(slug)}/public-config`, {headers: entitlementHeaders()});
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'アクセスコードを確認できませんでした');
+      sessionStorage.setItem(storageKey, token);
+      $('title').textContent = data.display_name;
+      $('welcome').textContent = data.welcome || data.description || '';
+      $('access').hidden = true;
+      $('billing').hidden = false;
+      $('input').disabled = false;
+      $('send').disabled = false;
+      unlocked = true;
+      $('input').focus();
+    } catch (err) {
+      sessionStorage.removeItem(storageKey);
+      add('system', err.message || 'アクセス確認に失敗しました');
+    } finally {
+      $('unlock').disabled = false;
+    }
+  }
+
+  async function submitMessage(text) {
+    if (!unlocked) return;
+    const apiKey = $('api-key').value.trim();
+    if (!apiKey) { add('system', 'BYOKを使うにはOpenAI API Keyを入力してください。'); return; }
+    const prior = conversationHistory.slice();
+    add('user', text);
+    $('input').value = '';
+    $('input').disabled = true;
+    $('send').disabled = true;
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-Provider-API-Key': apiKey,
+        ...entitlementHeaders(),
+      };
+      const res = await fetch('/api/chat', {
+        method:'POST',
+        headers,
+        body:JSON.stringify({slug, message:text, history:prior, payer_mode:'BYOK'})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'AIへの接続に失敗しました');
+      add('assistant', data.text);
+      conversationHistory.push({role:'user', content:text});
+      conversationHistory.push({role:'assistant', content:data.text});
+    } catch (err) {
+      add('system', err.message || 'エラーが発生しました');
+    } finally {
+      $('input').disabled = false;
+      $('send').disabled = false;
+      $('input').focus();
+    }
+  }
+
+  $('unlock').addEventListener('click', unlock);
+  $('form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = $('input').value.trim();
+    if (text) submitMessage(text);
+  });
+  captureFragmentToken();
+  if ($('access-token').value) unlock();
+})();
+</script>
+</body>
+</html>

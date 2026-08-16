@@ -1,0 +1,34 @@
+[Unit]
+Description=WebAI Bridge Commercial Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webai
+Group=webai
+WorkingDirectory=/opt/webai-bridge/runtime
+Environment=PYTHONUNBUFFERED=1
+Environment=WEB_AI_SERVICE_UNIT=webai-bridge.service
+Environment=WEB_AI_WORKING_DIRECTORY=/opt/webai-bridge/runtime
+Environment=WEB_AI_ROUTE_SURFACE=commercial:app
+Environment=WEB_AI_ENTITLEMENT_DB=/var/lib/webai-bridge/entitlements.sqlite3
+Environment=WEB_AI_LEDGER_PATH=/var/lib/webai-bridge/ledger.sqlite3
+Environment=WEB_AI_DIAGNOSTICS_ENABLED=0
+Environment=WEB_AI_STUDIO_ENABLED=0
+Environment=WEB_AI_ALLOW_INSECURE_HTTP=0
+# Set DEPLOYED_REVISION to the exact deployed Git commit/revision in the real unit/env file.
+# Set provider/budget/vector-store secrets through the host secret/environment mechanism; never commit them here.
+# Public traffic MUST terminate HTTPS at a trusted reverse proxy on this host.
+# Only localhost proxy headers are trusted so arbitrary internet clients cannot spoof X-Forwarded-Proto=https.
+ExecStart=/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/webai-bridge
+
+[Install]
+WantedBy=multi-user.target
