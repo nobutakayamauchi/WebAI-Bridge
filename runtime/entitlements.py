@@ -9,6 +9,10 @@ from pathlib import Path
 
 
 TOKEN_PREFIX = "webai_"
+PAYMENT_MISSING = "MISSING"
+PAYMENT_ACTIVE = "ACTIVE"
+PAYMENT_REVOKED = "REVOKED"
+PAYMENT_EXPIRED = "EXPIRED"
 
 
 def token_hash(token: str) -> str:
@@ -118,15 +122,21 @@ class EntitlementStore:
         expires_at = row["expires_at"]
         return expires_at is None or int(expires_at) > current
 
-    def authorize_payment(
+    def payment_state(
         self,
         *,
         package_id: str,
         payment_ref: str | None,
         now: int | None = None,
-    ) -> bool:
+    ) -> str:
+        """Return the latest lifecycle state for one package/payment pair.
+
+        MISSING is the only state that automatic checkout fulfillment may create.
+        REVOKED and EXPIRED are terminal for automatic handoff so replaying an old
+        Checkout Session cannot resurrect operator-revoked or expired access.
+        """
         if not package_id or not payment_ref:
-            return False
+            return PAYMENT_MISSING
         current = int(time.time()) if now is None else int(now)
         with self._connect() as conn:
             row = conn.execute(
@@ -134,15 +144,28 @@ class EntitlementStore:
                 SELECT status, expires_at
                 FROM entitlements
                 WHERE package_id=? AND payment_ref=?
-                ORDER BY issued_at DESC
+                ORDER BY issued_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (package_id, payment_ref),
             ).fetchone()
-        if row is None or row["status"] != "active":
-            return False
+        if row is None:
+            return PAYMENT_MISSING
+        if row["status"] != "active":
+            return PAYMENT_REVOKED
         expires_at = row["expires_at"]
-        return expires_at is None or int(expires_at) > current
+        if expires_at is not None and int(expires_at) <= current:
+            return PAYMENT_EXPIRED
+        return PAYMENT_ACTIVE
+
+    def authorize_payment(
+        self,
+        *,
+        package_id: str,
+        payment_ref: str | None,
+        now: int | None = None,
+    ) -> bool:
+        return self.payment_state(package_id=package_id, payment_ref=payment_ref, now=now) == PAYMENT_ACTIVE
 
     def revoke(self, token: str) -> bool:
         digest = token_hash(token)
