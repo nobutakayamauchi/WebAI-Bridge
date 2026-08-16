@@ -36,6 +36,7 @@ class StudioDraft(BaseModel):
     knowledge_platform_tool_reserve_usd: Decimal = Field(default=Decimal("0"), ge=0, le=1000)
 
     access_mode: AccessMode = "FREE"
+    access_price_jpy: int = Field(default=0, ge=0, le=100_000_000)
     included_runs: int = Field(default=0, ge=0, le=1_000_000)
 
     allowed_payer_modes: list[PayerMode] = Field(default_factory=lambda: ["BYOK"])
@@ -99,12 +100,18 @@ def build_package(
             errors.append("Platform-funded Knowledge requires an explicit positive tool-cost reserve.")
         warnings.append("Knowledge is a server binding in thin v0; file upload/indexing remains operator-assisted.")
 
+    if draft.access_mode == "FREE":
+        if draft.access_price_jpy != 0:
+            errors.append("FREE access must have a zero access price.")
+    else:
+        if draft.access_price_jpy <= 0:
+            errors.append("Paid access intent requires a positive access price.")
+        warnings.append("Commercial access enforcement is not implemented in thin v0; this is pricing intent only.")
+
     if draft.access_mode == "ALLOWANCE_THEN_PAID" and draft.included_runs <= 0:
         errors.append("ALLOWANCE_THEN_PAID requires included_runs > 0.")
     if draft.access_mode != "ALLOWANCE_THEN_PAID" and draft.included_runs > 0:
         warnings.append("included_runs is only descriptive outside ALLOWANCE_THEN_PAID in thin v0.")
-    if draft.access_mode != "FREE":
-        warnings.append("Commercial access enforcement is not implemented in thin v0; this is pricing intent only.")
 
     if draft.default_model not in draft.allowed_models:
         errors.append("Default model must be included in allowed models.")
@@ -133,6 +140,8 @@ def build_package(
         },
         "access": {
             "mode": draft.access_mode,
+            "currency": "JPY",
+            "price_amount_minor": draft.access_price_jpy,
             "included_runs": draft.included_runs,
             "commercial_enforcement": "NOT_IMPLEMENTED",
         },
