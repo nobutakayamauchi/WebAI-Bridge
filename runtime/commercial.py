@@ -28,6 +28,24 @@ def require_secure_transport(request: Request) -> None:
         raise HTTPException(status_code=426, detail="HTTPS is required for buyer credentials and BYOK")
 
 
+def paid_page_response() -> FileResponse:
+    response = FileResponse(PAID_PAGE)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; "
+        "script-src 'unsafe-inline'; "
+        "style-src 'unsafe-inline'; "
+        "connect-src 'self'; "
+        "img-src 'self' data:; "
+        "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    )
+    return response
+
+
 def ensure_commercial_hosted_runnable(app_config: dict) -> None:
     """Structural runtime gate used by the commercial gateway.
 
@@ -117,7 +135,7 @@ def paid_public_config(
 
 
 @app.get("/a/{slug}")
-def paid_app_page(slug: str):
+def paid_app_page(slug: str, request: Request):
     try:
         app_config = core.registry.get(slug)
     except KeyError:
@@ -125,9 +143,10 @@ def paid_app_page(slug: str):
     ensure_commercial_hosted_runnable(app_config)
     if (app_config.get("access") or {}).get("mode") == "FREE":
         return FileResponse(core.STATIC_DIR / "index.html")
+    require_secure_transport(request)
     if not PAID_PAGE.exists():
         raise HTTPException(status_code=503, detail="Paid hosted UI is missing")
-    return FileResponse(PAID_PAGE)
+    return paid_page_response()
 
 
 @app.post("/api/chat")
