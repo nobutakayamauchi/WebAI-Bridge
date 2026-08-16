@@ -54,55 +54,30 @@ def gateway(tmp_path, monkeypatch):
     cfg["billing"]["allowed_payer_modes"] = ["BYOK"]
     cfg["billing"]["default_payer_mode"] = "BYOK"
     cfg["billing"].pop("platform_credit", None)
-    cfg["readiness"] = {
-        "configuration": "VALIDATED",
-        "runtime": "READY",
-        "commercial": "MANUAL_REVIEW_REQUIRED",
-        "blockers": [],
-    }
+    cfg["readiness"] = {"configuration": "VALIDATED", "runtime": "READY", "commercial": "MANUAL_REVIEW_REQUIRED", "blockers": []}
     return module
 
 
 def fake_session():
-    return {
-        "id": SESSION_ID,
-        "status": "complete",
-        "payment_status": "paid",
-        "mode": "payment",
-        "payment_link": PAYMENT_LINK_ID,
-        "payment_intent": PAYMENT_REF,
-        "currency": "jpy",
-        "amount_total": 100,
-        "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"},
-    }
+    return {"id": SESSION_ID, "status": "complete", "payment_status": "paid", "mode": "payment", "payment_link": PAYMENT_LINK_ID, "payment_intent": PAYMENT_REF, "currency": "jpy", "amount_total": 100, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
 def fake_payment_link():
-    return {
-        "id": PAYMENT_LINK_ID,
-        "url": PAYMENT_LINK_URL,
-        "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"},
-    }
+    return {"id": PAYMENT_LINK_ID, "url": PAYMENT_LINK_URL, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
 def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, monkeypatch):
     module = gateway
     monkeypatch.setattr(module, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
-
     payment_browser = TestClient(module.app)
     safari = TestClient(module.app)
-
-    completed = payment_browser.get(
-        f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
-        follow_redirects=False,
-    )
+    completed = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert completed.status_code == 303, completed.text
     handoff_url = completed.headers["location"]
     assert handoff_url.startswith(f"/checkout/handoff/{SLUG}?ticket=handoff_")
     assert module.entitlement_cookie_name(SLUG) not in completed.headers.get("set-cookie", "")
     assert payment_browser.get(f"/apps/{SLUG}/public-config").status_code == 401
-
     landing = safari.get(handoff_url)
     assert landing.status_code == 200
     assert "Safari" in landing.text
@@ -110,10 +85,7 @@ def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, mo
     match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
     assert match is not None
     activate_url = match.group(1).replace("&amp;", "&")
-
-    # GET must not consume a one-time transfer authority.
     assert safari.get(activate_url, follow_redirects=False).status_code == 405
-
     activated = safari.post(activate_url, follow_redirects=False)
     assert activated.status_code == 303
     assert activated.headers["location"] == f"/a/{SLUG}"
@@ -122,13 +94,8 @@ def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, mo
     assert "HttpOnly" in cookie
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
     assert payment_browser.get(f"/apps/{SLUG}/public-config").status_code == 401
-
     assert payment_browser.post(activate_url, follow_redirects=False).status_code == 409
-    assert payment_browser.get(
-        f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
-        follow_redirects=False,
-    ).status_code == 409
-
+    assert payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 409
     assert module.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
 
@@ -138,4 +105,5 @@ def test_canonical_gateway_exposes_browser_transfer_capability(gateway):
     response = client.get("/api/studio/options")
     assert response.status_code == 200, response.text
     options = response.json()
-    assert options["stripe_auto_handoff"] == "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_BROWSER_TRANSFER_POST_V1"
+    assert options["stripe_auto_handoff"] == "BUY_ONCE_WEBHOOK_PLUS_REDIRECT_SINGLE_BROWSER_CLAIM_V1"
+    assert options["stripe_webhook_fulfillment"] == "CHECKOUT_SESSION_COMPLETED_OR_ASYNC_SUCCEEDED__IDEMPOTENT"
