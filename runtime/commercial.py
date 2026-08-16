@@ -187,7 +187,7 @@ def resolve_byok_package(slug: str, buyer_token: str | None, *, request: Request
 
 
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.5.0-stripe-auto-handoff")
+app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.5.1-stripe-single-claim")
 
 
 @app.get("/health")
@@ -211,7 +211,7 @@ def creator_studio_options() -> dict:
     options["manual_paid_hosted_entitlement"] = "BUY_ONCE_OR_SUBSCRIPTION__HOSTED__BYOK_ONLY"
     options["byok_credential_transport"] = "EPHEMERAL_PROCESS_MEMORY_HTTPONLY_COOKIE"
     options["buyer_entitlement_transport"] = "SIGNED_HTTPONLY_COOKIE_WITH_LEGACY_BEARER_FALLBACK"
-    options["stripe_auto_handoff"] = "BUY_ONCE_REDIRECT_VERIFICATION_V0"
+    options["stripe_auto_handoff"] = "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_V0"
     return options
 
 
@@ -259,10 +259,11 @@ def checkout_complete(slug: str, session_id: str, request: Request):
             )
         except ValueError:
             state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
-            if state != PAYMENT_ACTIVE:
-                raise HTTPException(status_code=409, detail="Checkout fulfillment could not establish an active entitlement") from None
+            if state == PAYMENT_ACTIVE:
+                raise HTTPException(status_code=409, detail="This Checkout Session has already been claimed") from None
+            raise HTTPException(status_code=409, detail="Checkout fulfillment could not establish an active entitlement") from None
     elif state == PAYMENT_ACTIVE:
-        pass
+        raise HTTPException(status_code=409, detail="This Checkout Session has already been claimed")
     elif state in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
         raise HTTPException(status_code=403, detail="This payment's buyer access is no longer active")
     else:
