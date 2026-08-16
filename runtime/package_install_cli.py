@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -31,6 +32,9 @@ def _safe_config_dir(path: Path) -> Path:
     resolved = path.resolve()
     if not os.access(resolved, os.W_OK):
         raise SystemExit(f"Config directory is not writable: {resolved}")
+    mode = stat.S_IMODE(resolved.stat().st_mode)
+    if mode & 0o002:
+        raise SystemExit("Config directory must not be world-writable")
     return resolved
 
 
