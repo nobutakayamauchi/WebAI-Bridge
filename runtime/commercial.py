@@ -60,7 +60,12 @@ app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.3.0-manual-ent
 
 
 @app.get("/apps/{slug}/public-config")
-def paid_public_config(slug: str, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
+def paid_public_config(
+    slug: str,
+    request: Request,
+    buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
+) -> dict:
+    core.enforce_rate_limit(request)
     try:
         app_config = core.registry.get(slug)
     except KeyError:
