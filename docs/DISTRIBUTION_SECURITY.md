@@ -1,13 +1,13 @@
 # Distribution Security / Copy-Control Boundary
 
 Date: 2026-08-16
-Status: `FOUR_LEVEL_CONTRACT_FROZEN / ENFORCEMENT_PARTIAL`
+Status: `FOUR_LEVEL_CONTRACT_FROZEN / HOSTED_RUNTIME_ONLY`
 
-## Finding
+## Core finding
 
-A portable AI Package delivered as a ZIP/file bundle can be copied after delivery. If the recipient controls the runtime and receives the package contents, WebAI Bridge cannot honestly claim perfect technical prevention of copying, inspection, modification, or Safety Kernel removal.
+A portable AI Package delivered into a buyer-controlled environment cannot honestly be promised as perfectly non-copyable, non-inspectable or non-modifiable.
 
-This is not a billing bug. It is a distribution-authority boundary.
+A second DA finding is equally important: **WebAI Bridge does not yet have a runnable portable package/ZIP runtime at all.** Current portable Levels 1-3 are product contracts and future implementation targets, not current execution claims.
 
 ## Hard invariants
 
@@ -18,161 +18,126 @@ PORTABLE != SAFETY ENFORCED
 LICENSE TERMS != TECHNICAL COPY CONTROL
 BUYER PASSPHRASE != PERFECT DRM
 ACTIVATION != PERFECT DRM
+PORTABLE INTENT != PORTABLE RUNTIME
+SERVER SECRET/ENV BINDING != PORTABLE RESOURCE
 ```
 
-No UI, package metadata, sales text, or creator warning may imply otherwise.
+## Level 1 — License only
 
-## Creator-facing protection levels
+Contract: `LEVEL_1_LICENSE_ONLY`
 
-Creator Studio exposes one simple four-level choice. The levels are an operational protection posture, not a promise that local software can be made impossible to inspect or copy.
+Target:
+- buyer receives a portable package;
+- redistribution may be prohibited by terms/license;
+- no technical copy-protection claim;
+- buyer can eventually use supported BYOK provider/model paths.
 
-### Level 1 — License only
+Current state:
+- `protection_implementation = AVAILABLE` means the selected protection is intentionally **no technical protection beyond terms**;
+- `runtime_implementation = NOT_IMPLEMENTED` because WebAI Bridge does not yet generate a runnable portable artifact;
+- `copy_protection_guarantee = NOT_GUARANTEED`.
 
-Contract value: `LEVEL_1_LICENSE_ONLY`
+Therefore Level 1 is **not currently a sellable runnable ZIP** merely because the contract validates.
 
-The buyer receives a portable package.
+## Level 2 — Buyer passphrase
 
-Properties:
-- redistribution can be prohibited by license/terms;
-- no buyer passphrase requirement;
-- no seller activation requirement;
-- buyer may use their own supported provider/model/API key;
-- technical copy prevention is explicitly `NOT_GUARANTEED`.
+Contract: `LEVEL_2_BUYER_PASSPHRASE`
 
-V0 implementation: `AVAILABLE` as export/licensing intent.
+Target:
+- portable package encryption;
+- buyer passphrase enrolled outside package metadata;
+- buyer secret required for normal opening/execution.
 
-Best fit:
-- inexpensive packages;
-- educational/open packages;
-- creators who accept copy risk;
-- packages whose value comes from updates/support rather than secrecy.
+Current state:
+- `protection_implementation = CONTRACT_ONLY`;
+- `runtime_implementation = NOT_IMPLEMENTED`;
+- `copy_protection_guarantee = PLANNED_ENCRYPTION`.
 
-### Level 2 — Encrypted + buyer passphrase
+No actual buyer passphrase is stored in Package JSON.
 
-Contract value: `LEVEL_2_BUYER_PASSPHRASE`
+## Level 3 — Dual-control activation
 
-Target behavior:
-- portable package is encrypted;
-- buyer enrolls/provides a passphrase outside the exported package metadata;
-- normal package opening/execution requires that buyer secret;
-- seller secret is not required.
+Contract: `LEVEL_3_DUAL_CONTROL_ACTIVATION`
 
-Security value:
-- raises the barrier against casual copying;
-- does not stop a buyer from deliberately sharing both package and passphrase;
-- once content is decrypted for execution, a sufficiently capable recipient may still inspect memory/runtime or alter the software.
-
-V0 implementation: `CONTRACT_ONLY / NOT_IMPLEMENTED`.
-
-The Package JSON must never contain the buyer's actual passphrase.
-
-### Level 3 — Buyer passphrase + seller/WebAI Bridge activation
-
-Contract value: `LEVEL_3_DUAL_CONTROL_ACTIVATION`
-
-Target behavior:
+Target:
 
 ```text
-BUYER SECRET
+BUYER PASSPHRASE
 +
 SELLER / WEBAI BRIDGE SIGNED ACTIVATION
 =
-NORMAL UNLOCK / EXECUTION
+NORMAL UNLOCK
 ```
 
-The seller side is **not** a raw password handed to the buyer. The intended design is a signed/server-verifiable activation or entitlement state retained under seller/WebAI Bridge control.
+The seller factor is not a raw seller password handed to the buyer. The future design is a seller/WebAI Bridge controlled signing/entitlement boundary.
 
-Target properties:
-- buyer passphrase;
-- seller/WebAI Bridge signed activation;
-- account/license-bound entitlement;
-- seat limit;
-- optional concurrency limit;
-- signed package/manifest;
-- optional bounded offline lease;
-- entitlement renewal/revocation;
-- audit evidence.
+Target properties may include:
+- account-bound entitlement;
+- seat/concurrency cap;
+- signed manifest;
+- bounded offline lease;
+- renewal/revocation;
+- audit evidence;
+- buy-once service-exit path.
 
-Important limit:
-If the buyer controls and can modify the runtime/source, activation remains a best-effort barrier rather than an absolute anti-copy guarantee. Stronger enforcement requires retaining a meaningful execution or secret boundary server-side.
+Current state:
+- `protection_implementation = CONTRACT_ONLY`;
+- `runtime_implementation = NOT_IMPLEMENTED`;
+- `copy_protection_guarantee = PLANNED_ENTITLEMENT`.
 
-V0 implementation: `CONTRACT_ONLY / NOT_IMPLEMENTED`.
+No buyer passphrase or seller signing key is Package JSON data.
 
-The Package JSON must never contain the buyer passphrase, seller signing key, Stripe secret, or any equivalent secret material.
+## Level 4 — Hosted only
 
-### Level 4 — Hosted only
+Contract: `LEVEL_4_HOSTED_ONLY`
 
-Contract value: `LEVEL_4_HOSTED_ONLY`
+Current hosted runtime exists.
 
-The package executes on a WebAI Bridge controlled runtime and is not handed to the buyer as a portable package.
+Current strengths:
+- creator Instructions remain server-side;
+- hosted Knowledge can remain server-side;
+- provider/platform credentials can remain server-side;
+- hosted Safety policy can be prepended by the server;
+- package contents are not handed to the buyer as a runnable portable bundle.
 
-Properties:
-- Instructions/Knowledge can remain server-side;
-- Entitlement can be enforced server-side;
-- Safety Kernel can be enforced server-side;
-- provider/API credentials can remain server-side or be supplied as bounded BYOK at runtime;
-- strongest current protection against casual package copying and secret extraction.
+Important DA correction:
+- paid buyer entitlement is **not implemented yet**;
+- therefore Level 4 is the strongest current secrecy/runtime boundary, **not** a claim that paid access control is already complete;
+- paid hosted packages fail closed in the current runtime until entitlement enforcement exists.
 
-V0 implementation: `AVAILABLE` as the hosted boundary contract.
+Hosted Safety is currently classified as `PROMPT_POLICY_PLUS_PROVIDER_BASELINE`. It is not claimed as perfect moderation.
 
-Recommended for:
-- high-value proprietary Instructions;
-- private/licensed Knowledge;
-- sensitive workflows;
-- creators who require strong entitlement enforcement;
-- packages where Safety Kernel enforcement is a hard requirement.
+## BYOK security boundary
 
-## Protection-level mapping
+Hosted BYOK does not persist the key intentionally, but the key passes through the WebAI Bridge server for each provider request.
 
 ```text
-LEVEL 1
-mode                        = PORTABLE_LICENSE
-portable_protection         = LICENSE_ONLY
-buyer_passphrase_required   = false
-seller_activation_required  = false
-seat_limit                  = 0
-protection_implementation   = AVAILABLE
-copy_protection_guarantee   = NOT_GUARANTEED
-
-LEVEL 2
-mode                        = PORTABLE_LICENSE
-portable_protection         = BUYER_PASSPHRASE
-buyer_passphrase_required   = true
-seller_activation_required  = false
-seat_limit                  = 0
-protection_implementation   = CONTRACT_ONLY
-copy_protection_guarantee   = PLANNED_ENCRYPTION
-
-LEVEL 3
-mode                        = PORTABLE_LICENSE
-portable_protection         = ACTIVATION_REQUIRED
-buyer_passphrase_required   = true
-seller_activation_required  = true
-seat_limit                  = creator intent
-protection_implementation   = CONTRACT_ONLY
-copy_protection_guarantee   = PLANNED_ENTITLEMENT
-
-LEVEL 4
-mode                        = HOSTED_ONLY
-portable_protection         = NOT_APPLICABLE
-buyer_passphrase_required   = false
-seller_activation_required  = false
-seat_limit                  = 0
-protection_implementation   = AVAILABLE
-copy_protection_guarantee   = HOSTED_BOUNDARY
+NOT PERSISTED != NEVER SEEN BY SERVER
 ```
+
+A future truly buyer-direct provider path is naturally aligned with portable execution, but that portable runtime does not yet exist.
+
+## Portable Knowledge / payer boundary
+
+Current Knowledge uses a server-side vector-store environment binding. Current PLATFORM_CREDIT also depends on server-side credential/budget identity.
+
+Those cannot simply be copied into a portable package and assumed to work.
+
+Portable readiness therefore explicitly blocks:
+- server Knowledge binding without a portable packaging/remote-resource policy;
+- server-funded payer configuration without a portable authorization path;
+- all Levels 1-3 until a real portable runtime artifact exists.
 
 ## Mandatory acknowledgement
 
-Levels 1-3 require explicit creator acknowledgement that portable delivery exposes/copies package content and cannot guarantee technical anti-copy protection.
+Levels 1-3 require creator acknowledgement that:
+- package contents may become inspectable/copyable/modifiable;
+- no perfect anti-copy guarantee exists;
+- the current thin v0 does not generate a runnable portable package.
 
-Level 4 does not require that acknowledgement because the package is not handed out as portable content.
+## Buy-once
 
-## Buy-once rule
-
-Buy-once does not automatically mean fully portable.
-
-Valid products include:
+All four combinations remain valid **product targets**:
 
 ```text
 BUY_ONCE + LEVEL_1_LICENSE_ONLY
@@ -181,69 +146,42 @@ BUY_ONCE + LEVEL_3_DUAL_CONTROL_ACTIVATION
 BUY_ONCE + LEVEL_4_HOSTED_ONLY
 ```
 
-For Levels 1-3, buyer-funded BYOK is the natural inference-cost default unless another payer policy is explicitly configured.
+But current readiness differs:
+- Levels 1-3: blocked by missing portable runtime, plus any protection/resource blockers;
+- Level 4 paid: blocked by missing hosted buyer entitlement.
 
-## Safety boundary
+So `BUY_ONCE` is a frozen commercial contract, not a statement that delivery is already implemented.
 
-Level 4:
-- Safety Kernel may be mandatory and server-enforced.
+## Level 3 service-exit obligation
 
-Levels 1-3:
-- Safety Kernel can be bundled and required by contract;
-- if the recipient controls a modifiable runtime, removal cannot be made impossible;
-- do not claim otherwise.
-
-Where Safety enforcement is essential, choose Level 4 or keep the safety-critical operation behind a server boundary.
-
-## Service-exit / buy-once survivability
-
-Level 3 creates a new obligation: a buy-once product should not become unusable merely because the seller or WebAI Bridge later shuts down.
-
-Before Level 3 becomes sellable, define an exit path such as:
-- permanent offline entitlement release after verified shutdown conditions;
-- escrowed release mechanism;
+Before Level 3 buy-once becomes sellable, define survivability if seller/WebAI Bridge disappears. Candidate mechanisms:
 - signed long-lived exit entitlement;
-- documented migration/export path.
+- verified shutdown release;
+- escrow/recovery mechanism;
+- documented migration path.
 
-This is intentionally not implemented in thin v0, but it is part of the Level 3 acceptance contract.
+No such mechanism is currently claimed.
 
-## V0 behavior
+## Implementation order
 
-V0 does not implement:
-- package encryption;
-- passphrase enrollment/storage;
-- activation server;
-- seller signing key infrastructure;
-- device fingerprinting;
-- entitlement revocation;
-- offline leases;
-- DRM.
-
-Therefore:
-- Level 1 may export now with explicit risk acknowledgement;
-- Level 2 may be recorded/exported only as `CONTRACT_ONLY` intent and must warn that encryption is not implemented;
-- Level 3 may be recorded/exported only as `CONTRACT_ONLY` intent and must warn that activation/seat enforcement/exit behavior are not implemented;
-- Level 4 is the strongest currently realizable boundary;
-- no portable package may claim guaranteed technical anti-copy protection.
-
-## Future implementation order
-
-1. Package encryption primitive and secret-free manifest.
-2. Buyer passphrase enrollment that never stores plaintext passphrases in package metadata.
-3. Account-bound entitlement and seller/WebAI Bridge signing keys.
-4. Seat/concurrency cap.
-5. Signed package manifest.
-6. Bounded offline lease if offline usability is justified.
-7. Revocation + audit evidence.
-8. Buy-once exit-key / survivability mechanism.
-9. Device binding only if real abuse evidence justifies the UX/privacy cost.
+1. Portable runtime/artifact format and acceptance test.
+2. Portable provider/BYOK configuration path.
+3. Portable Knowledge packaging or explicit remote-resource contract.
+4. Level 1 delivery/license packaging.
+5. Package encryption + secret-free manifest.
+6. Buyer passphrase enrollment.
+7. Seller/WebAI Bridge signing + entitlement.
+8. Seat/concurrency + bounded offline lease if justified.
+9. Revocation/audit.
+10. Buy-once exit/survivability mechanism.
+11. Device binding only if real abuse evidence justifies its UX/privacy cost.
 
 ## Product message
 
 For creators:
 
-> Level 1 gives maximum portability. Level 2 adds a buyer-secret barrier. Level 3 adds seller-side entitlement control. Level 4 keeps the AI hosted when secrecy and enforcement matter most.
+> Level 4 is the current hosted runtime. Levels 1-3 define how portable distribution should eventually be protected; they are not runnable portable products yet.
 
 For buyers:
 
-> Portable means you can take the package with you. It does not erase licensing terms, and no portable level is sold as impossible to copy or inspect.
+> Portable means freedom when that runtime exists. It will never be advertised as impossible to inspect or copy.
