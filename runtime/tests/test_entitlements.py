@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import importlib
 import json
-import sqlite3
 import sys
 import time
 import types
@@ -56,7 +55,7 @@ def commercial(tmp_path, monkeypatch):
     fake_openai.OpenAI = FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
     FakeOpenAI.created = []
-    for name in ["commercial", "app", "entitlements", "cost_router"]:
+    for name in ["commercial", "app", "entitlements", "cost_router", "entitlement_cli"]:
         sys.modules.pop(name, None)
     module = importlib.import_module("commercial")
     return module, TestClient(module.app), tmp_path
@@ -88,6 +87,24 @@ def make_paid(app_config: dict, *, mode="BUY_ONCE") -> None:
     }
 
 
+def write_paid_config(module, tmp_path: Path, *, mode="BUY_ONCE", activated=True) -> Path:
+    source = copy.deepcopy(module.core.registry.get("migration-fixture-ai"))
+    source.pop("_instructions", None)
+    make_paid(source, mode=mode)
+    if not activated:
+        source["status"] = "draft"
+        source["access"]["commercial_enforcement"] = "NOT_IMPLEMENTED"
+        source["readiness"] = {
+            "configuration": "VALIDATED",
+            "runtime": "BLOCKED_PAID_HOSTED_ENTITLEMENT_NOT_IMPLEMENTED",
+            "commercial": "MANUAL_REVIEW_REQUIRED",
+            "blockers": ["PAID_HOSTED_ENTITLEMENT_NOT_IMPLEMENTED"],
+        }
+    path = tmp_path / f"{mode.lower()}.json"
+    path.write_text(json.dumps(source), encoding="utf-8")
+    return path
+
+
 def post_chat(client, token=None, key="buyer-key", payer_mode="BYOK"):
     headers = {}
     if token is not None:
@@ -106,26 +123,43 @@ def post_chat(client, token=None, key="buyer-key", payer_mode="BYOK"):
     )
 
 
+def issue(module, payment_ref="pay_1", *, expires_at=None, buyer_ref="buyer-1"):
+    return module.entitlements.issue(
+        package_id="migration-fixture-ai",
+        buyer_ref=buyer_ref,
+        payment_ref=payment_ref,
+        expires_at=expires_at,
+    )
+
+
 def test_entitlement_store_hashes_plaintext_and_revokes(commercial):
     module, _, tmp_path = commercial
-    token = module.entitlements.issue(package_id="migration-fixture-ai", buyer_ref="order-1")
+    token = issue(module, "pay_hash", buyer_ref="order-1")
     assert token.startswith("webai_")
     assert module.entitlements.authorize(package_id="migration-fixture-ai", token=token)
     raw = (tmp_path / "entitlements.sqlite3").read_bytes()
     assert token.encode() not in raw
     rows = module.entitlements.list_for_package("migration-fixture-ai")
     assert rows[0]["buyer_ref"] == "order-1"
+    assert rows[0]["payment_ref"] == "pay_hash"
     assert "token" not in rows[0]
     assert module.entitlements.revoke(token) is True
     assert module.entitlements.authorize(package_id="migration-fixture-ai", token=token) is False
 
 
+def test_payment_reference_prevents_accidental_duplicate_active_issue_and_allows_reissue_after_revoke(commercial):
+    module, _, _ = commercial
+    first = issue(module, "pay_unique")
+    with pytest.raises(ValueError, match="active entitlement"):
+        issue(module, "pay_unique")
+    assert module.entitlements.revoke_payment(package_id="migration-fixture-ai", payment_ref="pay_unique") == 1
+    second = issue(module, "pay_unique")
+    assert second != first
+
+
 def test_expired_or_wrong_package_token_is_rejected(commercial):
     module, _, _ = commercial
-    token = module.entitlements.issue(
-        package_id="migration-fixture-ai",
-        expires_at=int(time.time()) + 5,
-    )
+    token = issue(module, "pay_expire", expires_at=int(time.time()) + 5)
     assert module.entitlements.authorize(package_id="migration-fixture-ai", token=token, now=int(time.time()) + 10) is False
     assert module.entitlements.authorize(package_id="other-ai", token=token) is False
 
@@ -148,7 +182,7 @@ def test_valid_entitlement_unlocks_config_and_chat_with_byok(commercial):
     module, client, _ = commercial
     cfg = module.core.registry.get("migration-fixture-ai")
     make_paid(cfg)
-    token = module.entitlements.issue(package_id="migration-fixture-ai", buyer_ref="order-2")
+    token = issue(module, "pay_valid", buyer_ref="order-2")
 
     config = client.get(
         "/apps/migration-fixture-ai/public-config",
@@ -177,9 +211,9 @@ def test_direct_chat_without_entitlement_never_reaches_provider(commercial):
 def test_revoked_entitlement_stops_existing_buyer(commercial):
     module, client, _ = commercial
     make_paid(module.core.registry.get("migration-fixture-ai"))
-    token = module.entitlements.issue(package_id="migration-fixture-ai")
+    token = issue(module, "pay_revoke")
     assert post_chat(client, token=token).status_code == 200
-    assert module.entitlements.revoke(token)
+    assert module.entitlements.revoke_payment(package_id="migration-fixture-ai", payment_ref="pay_revoke") == 1
     before = len(FakeOpenAI.created)
     assert post_chat(client, token=token).status_code == 401
     assert len(FakeOpenAI.created) == before
@@ -195,7 +229,7 @@ def test_paid_hosted_v0_refuses_platform_credit_even_with_valid_token(commercial
         "budget_id_env": "MIGRATION_FIXTURE_BUDGET_ID",
         "hard_limit_usd_micros": 500000,
     }
-    token = module.entitlements.issue(package_id="migration-fixture-ai")
+    token = issue(module, "pay_subsidy")
     result = post_chat(client, token=token, key=None, payer_mode="PLATFORM_CREDIT")
     assert result.status_code == 503
     assert FakeOpenAI.created == []
@@ -205,7 +239,7 @@ def test_only_buy_once_and_subscription_are_supported_for_manual_paid_hosted(com
     module, client, _ = commercial
     cfg = module.core.registry.get("migration-fixture-ai")
     make_paid(cfg, mode="BUY_ONCE")
-    token = module.entitlements.issue(package_id="migration-fixture-ai")
+    token = issue(module, "pay_modes")
     assert client.get(
         "/apps/migration-fixture-ai/public-config",
         headers={"X-WebAI-Entitlement": token},
@@ -235,19 +269,7 @@ def test_free_hosted_still_works_without_entitlement(commercial):
 def test_activate_config_is_explicit_and_fails_closed_for_subsidized_paid_package(commercial, tmp_path):
     module, _, _ = commercial
     cli = importlib.import_module("entitlement_cli")
-    source = copy.deepcopy(module.core.registry.get("migration-fixture-ai"))
-    source.pop("_instructions", None)
-    make_paid(source)
-    source["status"] = "draft"
-    source["access"]["commercial_enforcement"] = "NOT_IMPLEMENTED"
-    source["readiness"] = {
-        "configuration": "VALIDATED",
-        "runtime": "BLOCKED_PAID_HOSTED_ENTITLEMENT_NOT_IMPLEMENTED",
-        "commercial": "MANUAL_REVIEW_REQUIRED",
-        "blockers": ["PAID_HOSTED_ENTITLEMENT_NOT_IMPLEMENTED"],
-    }
-    config_path = tmp_path / "paid.json"
-    config_path.write_text(json.dumps(source), encoding="utf-8")
+    config_path = write_paid_config(module, tmp_path, activated=False)
 
     assert cli.cmd_activate_config(SimpleNamespace(config=str(config_path))) == 0
     activated = json.loads(config_path.read_text(encoding="utf-8"))
@@ -255,7 +277,9 @@ def test_activate_config_is_explicit_and_fails_closed_for_subsidized_paid_packag
     assert activated["access"]["commercial_enforcement"] == "ENTITLEMENT_ENFORCED"
     assert activated["readiness"]["runtime"] == "READY"
 
-    subsidized = copy.deepcopy(source)
+    subsidized = json.loads(config_path.read_text(encoding="utf-8"))
+    subsidized["status"] = "draft"
+    subsidized["access"]["commercial_enforcement"] = "NOT_IMPLEMENTED"
     subsidized["billing"]["allowed_payer_modes"] = ["BYOK", "PLATFORM_CREDIT"]
     subsidized["billing"]["platform_credit"] = {
         "enabled": True,
@@ -266,3 +290,35 @@ def test_activate_config_is_explicit_and_fails_closed_for_subsidized_paid_packag
     subsidized_path.write_text(json.dumps(subsidized), encoding="utf-8")
     with pytest.raises(SystemExit, match="BYOK-only"):
         cli.cmd_activate_config(SimpleNamespace(config=str(subsidized_path)))
+
+
+def test_cli_requires_payment_attestation_and_subscription_expiry(commercial, tmp_path):
+    module, _, _ = commercial
+    cli = importlib.import_module("entitlement_cli")
+    buy_once = write_paid_config(module, tmp_path, mode="BUY_ONCE", activated=True)
+
+    base_args = dict(
+        config=str(buy_once),
+        payment_verified=False,
+        payment_ref="pay_cli",
+        buyer_ref="buyer-cli",
+        days=None,
+        base_url="",
+        db=str(tmp_path / "cli.sqlite3"),
+    )
+    with pytest.raises(SystemExit, match="payment-verified"):
+        cli.cmd_issue(SimpleNamespace(**base_args))
+
+    base_args["payment_verified"] = True
+    base_args["days"] = 30
+    with pytest.raises(SystemExit, match="BUY_ONCE"):
+        cli.cmd_issue(SimpleNamespace(**base_args))
+
+    subscription = write_paid_config(module, tmp_path, mode="SUBSCRIPTION", activated=True)
+    sub_args = dict(base_args)
+    sub_args.update(config=str(subscription), payment_ref="pay_sub_cli", days=None)
+    with pytest.raises(SystemExit, match="requires --days"):
+        cli.cmd_issue(SimpleNamespace(**sub_args))
+
+    sub_args["days"] = 31
+    assert cli.cmd_issue(SimpleNamespace(**sub_args)) == 0
