@@ -30,6 +30,7 @@ def gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_AI_ALLOW_INSECURE_HTTP", "1")
     monkeypatch.setenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", COOKIE_SECRET)
     monkeypatch.setenv("WEB_AI_STRIPE_SECRET_KEY", "rk_test_canonical_handoff")
+    monkeypatch.setenv("WEB_AI_STUDIO_ENABLED", "1")
     for name in ["commercial", "app", "entitlements", "handoff_tickets", "cost_router"]:
         sys.modules.pop(name, None)
     module = importlib.import_module("commercial")
@@ -53,6 +54,12 @@ def gateway(tmp_path, monkeypatch):
     cfg["billing"]["allowed_payer_modes"] = ["BYOK"]
     cfg["billing"]["default_payer_mode"] = "BYOK"
     cfg["billing"].pop("platform_credit", None)
+    cfg["readiness"] = {
+        "configuration": "VALIDATED",
+        "runtime": "READY",
+        "commercial": "MANUAL_REVIEW_REQUIRED",
+        "blockers": [],
+    }
     return module
 
 
@@ -90,7 +97,7 @@ def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, mo
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
     )
-    assert completed.status_code == 303
+    assert completed.status_code == 303, completed.text
     handoff_url = completed.headers["location"]
     assert handoff_url.startswith(f"/checkout/handoff/{SLUG}?ticket=handoff_")
     assert module.entitlement_cookie_name(SLUG) not in completed.headers.get("set-cookie", "")
@@ -125,5 +132,7 @@ def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, mo
 
 def test_canonical_gateway_exposes_browser_transfer_capability(gateway):
     client = TestClient(gateway.app)
-    options = client.get("/api/studio/options").json()
+    response = client.get("/api/studio/options")
+    assert response.status_code == 200, response.text
+    options = response.json()
     assert options["stripe_auto_handoff"] == "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_BROWSER_TRANSFER_V1"
