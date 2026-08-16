@@ -12,10 +12,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from cost_router import BudgetLedger, PricingRegistry, cost_micros
+from studio import StudioDraft, StudioValidationError, build_package
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path(os.getenv("WEB_AI_CONFIG_DIR", BASE_DIR / "apps"))
 STATIC_DIR = BASE_DIR / "static"
+STUDIO_DIR = BASE_DIR.parent / "creator-studio"
+PACKAGE_SCHEMA_FILE = BASE_DIR.parent / "package-schema" / "package.schema.json"
 PRICING_FILE = Path(os.getenv("WEB_AI_PRICING_FILE", BASE_DIR / "pricing.json"))
 LEDGER_PATH = Path(os.getenv("WEB_AI_LEDGER_PATH", BASE_DIR / ".runtime" / "webai-ledger.sqlite3"))
 
@@ -80,7 +83,7 @@ class AppRegistry:
 registry = AppRegistry(CONFIG_DIR)
 pricing = PricingRegistry(PRICING_FILE)
 ledger = BudgetLedger(LEDGER_PATH)
-app = FastAPI(title="WebAI Bridge", version="0.1.0-dogfood")
+app = FastAPI(title="WebAI Bridge", version="0.2.0-dogfood")
 _request_times: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -96,9 +99,28 @@ def enforce_rate_limit(request: Request) -> None:
     q.append(now)
 
 
+def studio_enabled() -> bool:
+    return os.getenv("WEB_AI_STUDIO_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def require_studio_enabled() -> None:
+    if not studio_enabled():
+        raise HTTPException(status_code=404, detail="Creator Studio is disabled")
+
+
 def public_config(app_config: dict) -> dict:
     billing = app_config["billing"]
-    return {"slug": app_config["slug"], "display_name": app_config.get("display_name", app_config["slug"]), "description": app_config.get("description", ""), "status": app_config.get("status", "unknown"), "welcome": app_config.get("ui", {}).get("welcome", "Ask me anything."), "allowed_payer_modes": billing["allowed_payer_modes"], "default_payer_mode": billing["default_payer_mode"], "access": app_config.get("access", {}), "delivery": app_config.get("delivery", {})}
+    return {
+        "slug": app_config["slug"],
+        "display_name": app_config.get("display_name", app_config["slug"]),
+        "description": app_config.get("description", ""),
+        "status": app_config.get("status", "unknown"),
+        "welcome": app_config.get("ui", {}).get("welcome", "Ask me anything."),
+        "allowed_payer_modes": billing["allowed_payer_modes"],
+        "default_payer_mode": billing["default_payer_mode"],
+        "access": app_config.get("access", {}),
+        "delivery": app_config.get("delivery", {}),
+    }
 
 
 def resolve_payer_mode(payload: ChatRequest, app_config: dict) -> str:
@@ -146,7 +168,48 @@ def health() -> dict:
 
 @app.get("/runtime")
 def runtime_identity() -> dict:
-    return {"service_unit": os.getenv("WEB_AI_SERVICE_UNIT", "UNSET"), "working_directory": os.getenv("WEB_AI_WORKING_DIRECTORY", str(BASE_DIR)), "entrypoint": "app:app", "route_surface": os.getenv("WEB_AI_ROUTE_SURFACE", "UNSET"), "deployed_revision": os.getenv("DEPLOYED_REVISION", "UNSET"), "pricing_version": pricing.version, "ledger_path": str(LEDGER_PATH)}
+    return {
+        "service_unit": os.getenv("WEB_AI_SERVICE_UNIT", "UNSET"),
+        "working_directory": os.getenv("WEB_AI_WORKING_DIRECTORY", str(BASE_DIR)),
+        "entrypoint": "app:app",
+        "route_surface": os.getenv("WEB_AI_ROUTE_SURFACE", "UNSET"),
+        "deployed_revision": os.getenv("DEPLOYED_REVISION", "UNSET"),
+        "pricing_version": pricing.version,
+        "ledger_path": str(LEDGER_PATH),
+    }
+
+
+@app.get("/studio")
+def creator_studio_page():
+    require_studio_enabled()
+    page = STUDIO_DIR / "index.html"
+    if not page.exists():
+        raise HTTPException(status_code=503, detail="Creator Studio UI is missing")
+    return FileResponse(page)
+
+
+@app.get("/api/studio/options")
+def creator_studio_options() -> dict:
+    require_studio_enabled()
+    return {
+        "models": list(pricing.models.keys()),
+        "pricing_version": pricing.version,
+        "payer_modes": ["BYOK", "PLATFORM_CREDIT"],
+        "access_modes": ["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"],
+        "delivery_modes": ["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"],
+        "commercial_enforcement": "NOT_IMPLEMENTED",
+        "persistence": "NONE",
+    }
+
+
+@app.post("/api/studio/validate")
+def creator_studio_validate(payload: StudioDraft, request: Request) -> dict:
+    require_studio_enabled()
+    enforce_rate_limit(request)
+    try:
+        return build_package(payload, schema_path=PACKAGE_SCHEMA_FILE, available_models=set(pricing.models.keys()))
+    except StudioValidationError as exc:
+        raise HTTPException(status_code=422, detail={"errors": exc.errors, "warnings": exc.warnings}) from None
 
 
 @app.get("/apps/{slug}/public-config")
@@ -198,7 +261,13 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
 
     input_messages = [m.model_dump() for m in payload.history]
     input_messages.append({"role": "user", "content": payload.message})
-    kwargs: dict = {"model": model, "instructions": app_config["_instructions"], "input": input_messages, "max_output_tokens": max_output_tokens, "store": False}
+    kwargs: dict = {
+        "model": model,
+        "instructions": app_config["_instructions"],
+        "input": input_messages,
+        "max_output_tokens": max_output_tokens,
+        "store": False,
+    }
     if knowledge_enabled:
         vector_env = knowledge.get("vector_store_env")
         vector_store_id = os.getenv(vector_env or "") if vector_env else None
@@ -232,20 +301,30 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
             raise HTTPException(status_code=402, detail="Platform credit exhausted")
 
     from openai import OpenAI
+
     client = OpenAI(api_key=api_key)
     try:
         response = client.responses.create(**kwargs)
     except Exception as exc:
         if payer_mode == "PLATFORM_CREDIT" and budget_id:
-            ledger.release_failed(budget_id=budget_id, reserved_micros=reserved_micros, package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version, result="PROVIDER_ERROR")
+            ledger.release_failed(
+                budget_id=budget_id, reserved_micros=reserved_micros, package_id=app_config["slug"],
+                provider="openai", model=model, pricing_version=pricing.version, result="PROVIDER_ERROR"
+            )
         else:
-            ledger.record_byok(package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version, input_tokens=None, output_tokens=None, actual_cost_micros=None, result="PROVIDER_ERROR")
+            ledger.record_byok(
+                package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version,
+                input_tokens=None, output_tokens=None, actual_cost_micros=None, result="PROVIDER_ERROR"
+            )
         raise HTTPException(status_code=502, detail="Upstream AI request failed") from exc
 
     text = (getattr(response, "output_text", "") or "").strip()
     if not text:
         if payer_mode == "PLATFORM_CREDIT" and budget_id:
-            ledger.release_failed(budget_id=budget_id, reserved_micros=reserved_micros, package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version, result="NO_TEXT")
+            ledger.release_failed(
+                budget_id=budget_id, reserved_micros=reserved_micros, package_id=app_config["slug"],
+                provider="openai", model=model, pricing_version=pricing.version, result="NO_TEXT"
+            )
         raise HTTPException(status_code=502, detail="AI returned no text")
 
     input_tokens, output_tokens = extract_usage(response)
@@ -257,8 +336,17 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
 
     if payer_mode == "PLATFORM_CREDIT" and budget_id:
         charged = min(actual_cost, reserved_micros) if actual_cost is not None else reserved_micros
-        ledger.settle_platform(budget_id=budget_id, reserved_micros=reserved_micros, charged_micros=charged, package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version, input_tokens=input_tokens, output_tokens=output_tokens, actual_cost_micros=actual_cost, result="SUCCESS" if actual_cost is not None else "SUCCESS_COST_UNOBSERVED")
+        ledger.settle_platform(
+            budget_id=budget_id, reserved_micros=reserved_micros, charged_micros=charged,
+            package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version,
+            input_tokens=input_tokens, output_tokens=output_tokens, actual_cost_micros=actual_cost,
+            result="SUCCESS" if actual_cost is not None else "SUCCESS_COST_UNOBSERVED"
+        )
     else:
-        ledger.record_byok(package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version, input_tokens=input_tokens, output_tokens=output_tokens, actual_cost_micros=actual_cost, result="SUCCESS" if actual_cost is not None else "SUCCESS_COST_UNOBSERVED")
+        ledger.record_byok(
+            package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version,
+            input_tokens=input_tokens, output_tokens=output_tokens, actual_cost_micros=actual_cost,
+            result="SUCCESS" if actual_cost is not None else "SUCCESS_COST_UNOBSERVED"
+        )
 
     return {"text": text, "model": model, "payer_mode": payer_mode}
