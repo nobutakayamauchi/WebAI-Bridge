@@ -183,7 +183,7 @@ def main() -> int:
         "package_reused": package["reused"],
         "active_packages": preflight["active_packages"],
         "active_paid_packages": preflight["active_paid_packages"],
-        "entitlement_issued": False,
+        "entitlement_issuance_by_launcher": "NONE",
         "payment_link_configured": True,
         "port": port,
         "venv_created": venv_created,
