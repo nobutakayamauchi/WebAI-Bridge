@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 import stat
+import sys
 from pathlib import Path
 
 
 REPO_DIR = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO_DIR / "deploy" / "paid_dogfood_host.py"
+DEPLOY_DIR = REPO_DIR / "deploy"
+MODULE_PATH = DEPLOY_DIR / "paid_dogfood_host.py"
+if str(DEPLOY_DIR) not in sys.path:
+    sys.path.insert(0, str(DEPLOY_DIR))
 spec = importlib.util.spec_from_file_location("paid_dogfood_host_auto", MODULE_PATH)
 launcher = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
