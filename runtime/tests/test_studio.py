@@ -48,6 +48,9 @@ def base_payload():
         "default_model": "gpt-5.6-luna",
         "allowed_models": ["gpt-5.6-luna"],
         "delivery_mode": "HOSTED_ONLY",
+        "portable_protection": "LICENSE_ONLY",
+        "portable_seat_limit": 1,
+        "portable_copy_risk_acknowledged": False,
         "welcome": "Second AIです。",
         "max_input_chars": 12000,
         "max_history_messages": 12,
@@ -61,6 +64,16 @@ def paid_payload(mode="PAID", price=1500):
         "access_mode": mode,
         "access_price_jpy": price,
         "checkout_setup_mode": "ASSISTED_SETUP",
+    })
+    return payload
+
+
+def portable_payload(protection="LICENSE_ONLY"):
+    payload = base_payload()
+    payload.update({
+        "delivery_mode": "PORTABLE_LICENSE",
+        "portable_protection": protection,
+        "portable_copy_risk_acknowledged": True,
     })
     return payload
 
@@ -89,6 +102,7 @@ def test_studio_page_and_options(studio_client):
     page = client.get("/studio")
     assert page.status_code == 200
     assert "Creator Studio" in page.text
+    assert "コピー・解析・改変" in page.text
     options = client.get("/api/studio/options")
     assert options.status_code == 200
     body = options.json()
@@ -112,6 +126,8 @@ def test_byok_package_validates_without_runtime_write(studio_client):
     assert package["access"]["checkout"]["entitlement_verification"] == "NOT_REQUIRED"
     assert package["billing"]["allowed_payer_modes"] == ["BYOK"]
     assert "platform_credit" not in package["billing"]
+    assert package["delivery"]["copy_protection_guarantee"] == "HOSTED_BOUNDARY"
+    assert package["delivery"]["portable_protection"] == "NOT_APPLICABLE"
     assert set(appmod.registry.apps) == before
 
 
@@ -268,15 +284,58 @@ def test_allowance_requires_positive_free_runs(studio_client):
     assert "included_runs" in str(res.json())
 
 
+def test_portable_delivery_requires_explicit_copy_risk_ack(studio_client):
+    _, client = studio_client
+    payload = base_payload()
+    payload["delivery_mode"] = "PORTABLE_LICENSE"
+    payload["portable_copy_risk_acknowledged"] = False
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "copy prevention is not guaranteed" in str(res.json()).lower()
+
+
+def test_portable_license_only_never_claims_technical_copy_protection(studio_client):
+    _, client = studio_client
+    res = client.post("/api/studio/validate", json=portable_payload("LICENSE_ONLY"))
+    assert res.status_code == 200
+    body = res.json()
+    delivery = body["package"]["delivery"]
+    assert delivery["portable_protection"] == "LICENSE_ONLY"
+    assert delivery["copy_protection_guarantee"] == "NOT_GUARANTEED"
+    assert delivery["portable_copy_risk_acknowledged"] is True
+    warnings = " ".join(body["warnings"]).lower()
+    assert "not guaranteed" in warnings
+
+
+def test_portable_activation_is_only_planned_until_entitlement_exists(studio_client):
+    _, client = studio_client
+    payload = portable_payload("ACTIVATION_REQUIRED")
+    payload["portable_seat_limit"] = 2
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 200
+    body = res.json()
+    delivery = body["package"]["delivery"]
+    assert delivery["portable_protection"] == "ACTIVATION_REQUIRED"
+    assert delivery["seat_limit"] == 2
+    assert delivery["copy_protection_guarantee"] == "PLANNED_ENTITLEMENT"
+    warnings = " ".join(body["warnings"]).lower()
+    assert "not implemented" in warnings
+    assert "must not be sold as technically protected" in warnings
+
+
 def test_paid_and_portable_are_explicit_warnings(studio_client):
     _, client = studio_client
     payload = paid_payload(price=500)
-    payload["delivery_mode"] = "HOSTED_AND_PORTABLE"
+    payload.update({
+        "delivery_mode": "HOSTED_AND_PORTABLE",
+        "portable_copy_risk_acknowledged": True,
+    })
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 200
     warnings = " ".join(res.json()["warnings"]).lower()
     assert "commercial access enforcement" in warnings
     assert "portable" in warnings
+    assert "not guaranteed" in warnings
 
 
 def test_unknown_or_unallowed_model_fails(studio_client):
