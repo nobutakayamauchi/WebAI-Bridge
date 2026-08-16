@@ -83,11 +83,6 @@ def paid_page_response() -> FileResponse:
 
 
 def ensure_commercial_hosted_runnable(app_config: dict) -> None:
-    """Structural runtime gate used by the commercial gateway.
-
-    Free packages keep the existing behavior. Paid hosted v0 is deliberately narrow:
-    buy-once or subscription, explicit entitlement enforcement, and BYOK only.
-    """
     status = app_config.get("status")
     if status not in core.RUNNABLE_STATUSES:
         raise HTTPException(status_code=409, detail="AI Package is not activated for runtime use")
@@ -130,8 +125,6 @@ def resolve_byok_package(slug: str, buyer_token: str | None) -> dict:
     return app_config
 
 
-# Core route functions resolve this global at call time. Replacing it lets the
-# commercial gateway reuse the existing provider/cost path without duplicating it.
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
 
 app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.4.0-ephemeral-byok")
@@ -258,20 +251,24 @@ def paid_chat(
     legacy_byok_api_key: str | None = Header(default=None, alias="X-Provider-API-Key"),
 ) -> dict:
     require_secure_transport(request)
-    if legacy_byok_api_key:
-        raise HTTPException(status_code=400, detail="Direct BYOK header transport is disabled; create an ephemeral BYOK session first")
     try:
         app_config = core.registry.get(payload.slug)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
     require_entitlement(app_config, buyer_token)
     payer_mode = core.resolve_payer_mode(payload, app_config)
+
     byok_api_key = None
     if payer_mode == "BYOK":
-        session_token = request.cookies.get(byok_cookie_name(payload.slug))
-        byok_api_key = byok_sessions.resolve(package_id=payload.slug, token=session_token)
-        if not byok_api_key:
-            raise HTTPException(status_code=401, detail="BYOK session is missing or expired; reconnect your provider key")
+        if legacy_byok_api_key:
+            if not insecure_http_allowed():
+                raise HTTPException(status_code=400, detail="Direct BYOK header transport is disabled; create an ephemeral BYOK session first")
+            byok_api_key = legacy_byok_api_key
+        else:
+            session_token = request.cookies.get(byok_cookie_name(payload.slug))
+            byok_api_key = byok_sessions.resolve(package_id=payload.slug, token=session_token)
+            if not byok_api_key:
+                raise HTTPException(status_code=401, detail="BYOK session is missing or expired; reconnect your provider key")
     return core.chat(payload=payload, request=request, byok_api_key=byok_api_key)
 
 
