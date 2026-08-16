@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import stat
+import tempfile
+from pathlib import Path
+
+from deployment_preflight import _secret_key_paths
+from studio import validate_package_document
+
+BASE_DIR = Path(__file__).resolve().parent
+PACKAGE_SCHEMA_FILE = BASE_DIR.parent / "package-schema" / "package.schema.json"
+DEFAULT_CONFIG_DIR = Path(os.getenv("WEB_AI_CONFIG_DIR", BASE_DIR / "apps"))
+MAX_INSTRUCTIONS_CHARS = 100_000
+NONRUNNABLE_REPLACE_STATES = {"draft", "disabled"}
+
+
+def _regular_non_symlink(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink")
+    if not path.exists() or not path.is_file():
+        raise SystemExit(f"{label} must be an existing regular file: {path}")
+
+
+def _safe_config_dir(path: Path) -> Path:
+    if path.is_symlink():
+        raise SystemExit("Config directory must not be a symlink")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"Config directory does not exist: {path}")
+    resolved = path.resolve()
+    if not os.access(resolved, os.W_OK):
+        raise SystemExit(f"Config directory is not writable: {resolved}")
+    return resolved
+
+
+def _load_package(path: Path) -> dict:
+    _regular_non_symlink(path, "Package JSON")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"Package JSON is invalid: {exc}") from exc
+    errors = validate_package_document(data, schema_path=PACKAGE_SCHEMA_FILE)
+    if errors:
+        raise SystemExit("Package schema invalid: " + "; ".join(errors))
+    return data
+
+
+def _validate_installable_package(data: dict) -> str:
+    slug = str(data.get("slug") or "")
+    if not slug:
+        raise SystemExit("Package slug is missing")
+    if data.get("id") != slug:
+        raise SystemExit("Package id must equal slug for operator install v0")
+    if data.get("status") != "draft":
+        raise SystemExit("Only draft Studio exports may be installed; install must never activate a package")
+    expected = f"apps/{slug}.instructions.md"
+    if data.get("instructions_file") != expected:
+        raise SystemExit(f"instructions_file must be canonical: {expected}")
+    secret_paths = _secret_key_paths(data)
+    if secret_paths:
+        raise SystemExit("Package JSON contains secret-like material: " + ", ".join(secret_paths))
+    return slug
+
+
+def _read_instructions(path: Path) -> str:
+    _regular_non_symlink(path, "Instructions")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise SystemExit(f"Instructions must be UTF-8 text: {exc}") from exc
+    if not text.strip():
+        raise SystemExit("Instructions must not be empty")
+    if "\x00" in text:
+        raise SystemExit("Instructions must not contain NUL bytes")
+    if len(text) > MAX_INSTRUCTIONS_CHARS:
+        raise SystemExit(f"Instructions exceed {MAX_INSTRUCTIONS_CHARS} characters")
+    return text
+
+
+def _load_existing_status(package_path: Path) -> str | None:
+    if not package_path.exists():
+        return None
+    if package_path.is_symlink() or not package_path.is_file():
+        raise SystemExit("Existing destination Package JSON is not a regular file")
+    try:
+        existing = json.loads(package_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"Existing destination Package JSON cannot be safely classified: {exc}") from exc
+    return str(existing.get("status") or "unknown")
+
+
+def _reject_destination_symlink(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} destination must not be a symlink")
+
+
+def _stage_text(config_dir: Path, *, prefix: str, content: str, mode: int = 0o600) -> Path:
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=config_dir)
+    staged = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(staged, mode)
+        return staged
+    except Exception:
+        try:
+            staged.unlink(missing_ok=True)
+        finally:
+            raise
+
+
+def install_package(
+    *,
+    package_source: Path,
+    instructions_source: Path,
+    config_dir: Path,
+    replace_nonrunnable: bool = False,
+) -> dict:
+    config_dir = _safe_config_dir(config_dir)
+    data = _load_package(package_source)
+    slug = _validate_installable_package(data)
+    instructions = _read_instructions(instructions_source)
+
+    package_dest = config_dir / f"{slug}.json"
+    instructions_dest = config_dir / f"{slug}.instructions.md"
+    _reject_destination_symlink(package_dest, "Package JSON")
+    _reject_destination_symlink(instructions_dest, "Instructions")
+
+    existing_status = _load_existing_status(package_dest)
+    if existing_status is not None:
+        if existing_status not in NONRUNNABLE_REPLACE_STATES:
+            raise SystemExit(
+                f"Refusing to overwrite existing {existing_status!r} package; active/dogfood/unknown authority requires a separate lifecycle operation"
+            )
+        if not replace_nonrunnable:
+            raise SystemExit(
+                f"Destination package already exists with status={existing_status}; pass --replace-nonrunnable only after deliberate review"
+            )
+
+    package_text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    staged_instructions = _stage_text(
+        config_dir,
+        prefix=f".{slug}.instructions.",
+        content=instructions,
+    )
+    staged_package = _stage_text(
+        config_dir,
+        prefix=f".{slug}.package.",
+        content=package_text,
+    )
+
+    try:
+        # Authority ordering is intentional: Instructions become available first.
+        # Package JSON is replaced last, so runtime discovery never sees a newly
+        # installed config before its referenced Instructions file exists.
+        os.replace(staged_instructions, instructions_dest)
+        staged_instructions = None
+        os.replace(staged_package, package_dest)
+        staged_package = None
+        try:
+            dir_fd = os.open(config_dir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # Directory fsync is best effort across filesystems/platforms. File
+            # contents themselves were already fsynced before atomic replacement.
+            pass
+    finally:
+        if staged_instructions is not None:
+            staged_instructions.unlink(missing_ok=True)
+        if staged_package is not None:
+            staged_package.unlink(missing_ok=True)
+
+    return {
+        "installed": True,
+        "slug": slug,
+        "status": "draft",
+        "package_path": str(package_dest),
+        "instructions_path": str(instructions_dest),
+        "replaced_status": existing_status,
+        "next": f"Review deployment preflight, then explicitly activate with entitlement_cli.py activate-config --config {package_dest}",
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Install a Studio-exported WebAI Package without activating it")
+    parser.add_argument("--package", required=True, help="Source Package JSON exported by Creator Studio")
+    parser.add_argument("--instructions", required=True, help="Source Instructions markdown/text file")
+    parser.add_argument("--config-dir", default=str(DEFAULT_CONFIG_DIR), help="Deployed runtime apps directory")
+    parser.add_argument(
+        "--replace-nonrunnable",
+        action="store_true",
+        help="Allow replacement only when the existing destination package is draft or disabled",
+    )
+    args = parser.parse_args()
+
+    result = install_package(
+        package_source=Path(args.package),
+        instructions_source=Path(args.instructions),
+        config_dir=Path(args.config_dir),
+        replace_nonrunnable=args.replace_nonrunnable,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
