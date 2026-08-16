@@ -148,6 +148,25 @@ Deployment Identity remains required, but it can be opt-in rather than public-by
 
 Decision: `FIX NOW` by making diagnostics opt-in.
 
+### F10 — portable protection levels exist before a portable runtime/package actually exists
+
+DA:
+Creator Studio currently exports Package JSON + Instructions. It does not yet build a runnable ZIP/portable runtime. Portable contracts can also select server-only concepts such as PLATFORM_CREDIT or a server Vector Store environment binding that would not exist in a buyer-controlled environment.
+
+Counter-DA:
+Keeping portable intent in the schema is valuable because it freezes the product model. Claiming any portable level is currently runnable/sellable is not.
+
+Decision: `FIX READINESS/CLAIMS NOW`; do not build the portable runtime inside this PR.
+
+Invariant:
+
+```text
+PORTABLE INTENT != PORTABLE RUNTIME
+SERVER SECRET/ENV BINDING != PORTABLE RESOURCE
+```
+
+All portable levels remain contract/design intent until a real portable artifact, provider credential path, Knowledge packaging/remote binding policy, and acceptance test exist.
+
 ## Findings that did not justify immediate implementation
 
 ### D1 — reservation IDs / idempotent settlement / crash leases
@@ -202,4 +221,4 @@ Decision: `KEEP CONTRACT-ONLY / BLOCK READY-TO-SELL CLAIM`.
 
 ## Merge gate
 
-The PR may return to `MERGE_READY` only after F1-F9 are either implemented and regression-tested or explicitly downgraded in product claims so the current runtime cannot contradict the contract.
+The PR may return to `MERGE_READY` only after F1-F10 are either implemented and regression-tested or explicitly downgraded in product claims so the current runtime cannot contradict the contract.
