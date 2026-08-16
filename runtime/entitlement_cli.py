@@ -43,8 +43,28 @@ def require_activated_paid_hosted(data: dict) -> None:
 
 def atomic_write_json(path: Path, data: dict) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp, path)
+    if temp.exists():
+        if temp.is_symlink() or not temp.is_file():
+            raise SystemExit(f"Unsafe stale activation temp file: {temp}")
+        temp.unlink()
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def verify_checkout_before_activation(checkout: dict, *, checkout_reviewed: bool) -> None:
