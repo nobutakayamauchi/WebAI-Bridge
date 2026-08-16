@@ -11,13 +11,24 @@ DOMAIN_RE = re.compile(
 )
 REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 UNIX_NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+SAFE_ABSOLUTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 
 
 def _absolute(path_value: str, label: str) -> Path:
-    path = Path(path_value)
+    raw = path_value.strip()
+    if not SAFE_ABSOLUTE_PATH_RE.fullmatch(raw):
+        raise ValueError(f"{label} contains unsupported characters")
+    path = Path(raw)
     if not path.is_absolute():
         raise ValueError(f"{label} must be an absolute path")
-    return path
+    resolved = path.resolve(strict=False)
+    if resolved == Path("/"):
+        raise ValueError(f"{label} must not be filesystem root")
+    return resolved
+
+
+def _overlap(a: Path, b: Path) -> bool:
+    return a == b or a in b.parents or b in a.parents
 
 
 def validate_inputs(*, domain: str, runtime_dir: str, state_dir: str, revision: str, user: str, group: str) -> dict:
@@ -26,15 +37,10 @@ def validate_inputs(*, domain: str, runtime_dir: str, state_dir: str, revision: 
         raise ValueError("domain must be a valid public hostname")
     runtime = _absolute(runtime_dir, "runtime_dir")
     state = _absolute(state_dir, "state_dir")
-    if runtime == Path("/") or state == Path("/"):
-        raise ValueError("runtime_dir/state_dir must not be filesystem root")
-    try:
-        state.relative_to(runtime)
-    except ValueError:
-        pass
-    else:
-        raise ValueError("state_dir must live outside runtime_dir")
-    if not REVISION_RE.fullmatch(revision.strip()):
+    if _overlap(runtime, state):
+        raise ValueError("runtime_dir and state_dir must not overlap in either direction")
+    revision = revision.strip().lower()
+    if not REVISION_RE.fullmatch(revision):
         raise ValueError("revision must be an exact 40- or 64-hex Git commit id")
     if not UNIX_NAME_RE.fullmatch(user):
         raise ValueError("user must be a simple Unix service account name")
@@ -44,7 +50,7 @@ def validate_inputs(*, domain: str, runtime_dir: str, state_dir: str, revision: 
         "domain": domain,
         "runtime_dir": str(runtime),
         "state_dir": str(state),
-        "revision": revision.lower(),
+        "revision": revision,
         "user": user,
         "group": group,
     }
@@ -53,7 +59,7 @@ def validate_inputs(*, domain: str, runtime_dir: str, state_dir: str, revision: 
 def render_systemd(values: dict) -> str:
     runtime = values["runtime_dir"]
     state = values["state_dir"]
-    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE=commercial:app\nEnvironment=WEB_AI_CONFIG_DIR={runtime}/apps\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED=0\nEnvironment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nEnvironmentFile=-/etc/webai-bridge/webai-bridge.env\nExecStartPre={runtime}/.venv/bin/python {runtime}/deployment_preflight.py\nExecStart={runtime}/.venv/bin/uvicorn commercial:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
+    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Optional operator-supplied Knowledge/provider bindings are loaded first.\n# The locked deployment identity/security values below intentionally override\n# same-named entries from this file.\nEnvironmentFile=-/etc/webai-bridge/webai-bridge.env\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE=commercial:app\nEnvironment=WEB_AI_CONFIG_DIR={runtime}/apps\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED=0\nEnvironment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nExecStartPre={runtime}/.venv/bin/python {runtime}/deployment_preflight.py\nExecStart={runtime}/.venv/bin/uvicorn commercial:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
 
 
 def render_caddy(values: dict) -> str:
@@ -83,19 +89,26 @@ def write_outputs(values: dict, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not output_dir.is_dir():
         raise ValueError("output_dir is not a directory")
+    if output_dir.stat().st_mode & 0o002:
+        raise ValueError("output_dir must not be world-writable")
 
     files = {
         "webai-bridge.service": render_systemd(values),
         "Caddyfile": render_caddy(values),
         "deployment-manifest.json": render_manifest(values),
     }
-    written = {}
-    for name, content in files.items():
-        destination = output_dir / name
+    destinations = {name: output_dir / name for name in files}
+    for destination in destinations.values():
         if destination.is_symlink():
             raise ValueError(f"refusing to replace symlink output: {destination}")
+
+    written = {}
+    for name, content in files.items():
+        destination = destinations[name]
         temporary = output_dir / f".{name}.tmp"
         if temporary.exists():
+            if temporary.is_symlink() or not temporary.is_file():
+                raise ValueError(f"unsafe stale temporary output: {temporary}")
             temporary.unlink()
         temporary.write_text(content, encoding="utf-8")
         os.chmod(temporary, 0o600)
