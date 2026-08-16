@@ -51,6 +51,7 @@ def commercial(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_AI_LEDGER_PATH", str(tmp_path / "ledger.sqlite3"))
     monkeypatch.setenv("WEB_AI_ENTITLEMENT_DB", str(tmp_path / "entitlements.sqlite3"))
     monkeypatch.setenv("WEB_AI_REQUESTS_PER_MINUTE", "999")
+    monkeypatch.setenv("WEB_AI_ALLOW_INSECURE_HTTP", "1")
     fake_openai = types.ModuleType("openai")
     fake_openai.OpenAI = FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
@@ -264,6 +265,25 @@ def test_free_hosted_still_works_without_entitlement(commercial):
     assert cfg["access"]["mode"] == "FREE"
     assert client.get("/apps/migration-fixture-ai/public-config").status_code == 200
     assert post_chat(client, token=None, key="free-byok").status_code == 200
+
+
+def test_commercial_gateway_requires_https_unless_explicit_local_override(commercial, monkeypatch):
+    module, client, _ = commercial
+    cfg = module.core.registry.get("migration-fixture-ai")
+    make_paid(cfg)
+    token = issue(module, "pay_tls")
+    monkeypatch.setenv("WEB_AI_ALLOW_INSECURE_HTTP", "0")
+
+    before = len(FakeOpenAI.created)
+    config = client.get(
+        "/apps/migration-fixture-ai/public-config",
+        headers={"X-WebAI-Entitlement": token},
+    )
+    assert config.status_code == 426
+
+    chat = post_chat(client, token=token, key="buyer-secret")
+    assert chat.status_code == 426
+    assert len(FakeOpenAI.created) == before
 
 
 def test_activate_config_is_explicit_and_fails_closed_for_subsidized_paid_package(commercial, tmp_path):
