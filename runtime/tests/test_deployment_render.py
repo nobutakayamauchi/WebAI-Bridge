@@ -93,7 +93,7 @@ def test_invalid_deployment_identifiers_are_rejected(field, bad):
 
 
 def test_state_directory_inside_runtime_is_rejected():
-    with pytest.raises(ValueError, match="outside runtime_dir"):
+    with pytest.raises(ValueError, match="must not overlap"):
         render.validate_inputs(
             domain="ai.example.com",
             runtime_dir="/opt/webai-bridge/runtime",
