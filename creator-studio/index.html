@@ -17,8 +17,8 @@
     input, textarea, select { width:100%; border:1px solid #bbb; border-radius:10px; padding:11px; font:inherit; background:#fff; }
     textarea { min-height:120px; resize:vertical; }
     .inline { display:flex; gap:12px; flex-wrap:wrap; }
-    .check { display:flex; align-items:center; gap:7px; font-weight:500; margin:8px 0; }
-    .check input { width:auto; }
+    .check { display:flex; align-items:flex-start; gap:7px; font-weight:500; margin:8px 0; line-height:1.4; }
+    .check input { width:auto; margin-top:3px; }
     .hidden { display:none; }
     button { border:0; border-radius:12px; padding:12px 14px; font:inherit; font-weight:700; cursor:pointer; }
     .primary { background:#111; color:#fff; width:100%; }
@@ -28,6 +28,7 @@
     .ok { color:#087f23; }
     .bad { color:#b00020; }
     .warn { color:#8a5a00; }
+    .danger-note { color:#8a2400; background:#fff4ef; border-radius:10px; padding:10px; font-size:13px; line-height:1.5; }
     details { margin-top:10px; }
     summary { font-weight:700; cursor:pointer; }
   </style>
@@ -49,7 +50,7 @@
 
     <section>
       <h2>2. Knowledge</h2>
-      <label class="check"><input type="checkbox" id="knowledgeEnabled"> Knowledgeを使う</label>
+      <label class="check"><input type="checkbox" id="knowledgeEnabled"> <span>Knowledgeを使う</span></label>
       <div id="knowledgeFields" class="hidden">
         <label for="vectorEnv">Vector Storeの環境変数名</label><input id="vectorEnv" placeholder="MY_AI_VECTOR_STORE_ID">
         <label for="knowledgeReserveTokens">検索用token予約</label><input id="knowledgeReserveTokens" type="number" min="0" value="0">
@@ -88,8 +89,8 @@
 
     <section>
       <h2>4. 推論代を誰が払う？</h2>
-      <label class="check"><input type="checkbox" id="payerByok" checked> 利用者のAPIキー（BYOK）</label>
-      <label class="check"><input type="checkbox" id="payerPlatform"> 運営/作者クレジット</label>
+      <label class="check"><input type="checkbox" id="payerByok" checked> <span>利用者のAPIキー（BYOK）</span></label>
+      <label class="check"><input type="checkbox" id="payerPlatform"> <span>運営/作者クレジット</span></label>
       <label for="defaultPayer">標準の支払元</label><select id="defaultPayer"><option value="BYOK">BYOK</option></select>
       <div id="platformFields" class="hidden">
         <label for="budgetEnv">Budget IDの環境変数名</label><input id="budgetEnv" placeholder="MY_AI_BUDGET_ID">
@@ -104,13 +105,26 @@
     </section>
 
     <section>
-      <h2>6. 配布</h2>
+      <h2>6. 配布・コピー保護</h2>
       <label for="deliveryMode">配布方法</label>
       <select id="deliveryMode">
-        <option value="HOSTED_ONLY">URLのみ</option>
+        <option value="HOSTED_ONLY">URLのみ（推奨：秘密を守りたい）</option>
         <option value="PORTABLE_LICENSE">持ち出し可</option>
         <option value="HOSTED_AND_PORTABLE">URL + 持ち出し可</option>
       </select>
+      <div id="portableFields" class="hidden">
+        <p class="danger-note"><strong>重要：</strong>ZIPやファイルを購入者へ渡した後、その内容を技術的に100%コピー不能にはできません。秘密性や強制Safetyが必要ならURLのみを選んでください。</p>
+        <label for="portableProtection">持ち出し版の保護</label>
+        <select id="portableProtection">
+          <option value="LICENSE_ONLY">ライセンスのみ（軽い・技術的コピー防止なし）</option>
+          <option value="ACTIVATION_REQUIRED">購入者Activation必須（将来実装）</option>
+        </select>
+        <div id="activationFields" class="hidden">
+          <label for="portableSeatLimit">利用席数</label><input id="portableSeatLimit" type="number" min="1" value="1">
+          <p class="note">Activation/Entitlementサーバーはthin v0では未実装です。この設定は将来の契約意図として保存されます。</p>
+        </div>
+        <label class="check"><input type="checkbox" id="portableRiskAck"> <span>持ち出し版はコピー・解析・改変を完全には防げないことを理解し、この配布方法を選びます。</span></label>
+      </div>
       <details>
         <summary>詳細上限</summary>
         <label for="maxInput">1メッセージ最大文字数</label><input id="maxInput" type="number" min="1" value="12000">
@@ -140,12 +154,16 @@
   function toggle() {
     const paid = $('accessMode').value !== 'FREE';
     const assisted = $('checkoutSetupMode').value === 'ASSISTED_SETUP';
+    const portable = $('deliveryMode').value !== 'HOSTED_ONLY';
+    const activated = portable && $('portableProtection').value === 'ACTIVATION_REQUIRED';
     $('knowledgeFields').classList.toggle('hidden', !$('knowledgeEnabled').checked);
     $('priceFields').classList.toggle('hidden', !paid);
     $('allowanceFields').classList.toggle('hidden', $('accessMode').value !== 'ALLOWANCE_THEN_PAID');
     $('selfCheckoutFields').classList.toggle('hidden', !paid || assisted);
     $('assistedCheckoutNote').classList.toggle('hidden', !paid || !assisted);
     $('platformFields').classList.toggle('hidden', !$('payerPlatform').checked);
+    $('portableFields').classList.toggle('hidden', !portable);
+    $('activationFields').classList.toggle('hidden', !activated);
     const payers = [];
     if ($('payerByok').checked) payers.push('BYOK');
     if ($('payerPlatform').checked) payers.push('PLATFORM_CREDIT');
@@ -158,7 +176,7 @@
     const res = await fetch('/api/studio/options');
     if (!res.ok) throw new Error('Creator Studioが有効ではありません');
     const data = await res.json();
-    $('models').innerHTML = data.models.map((m, i) => `<label class="check"><input type="checkbox" class="modelCheck" value="${m}" ${i===0?'checked':''}> ${m}</label>`).join('');
+    $('models').innerHTML = data.models.map((m, i) => `<label class="check"><input type="checkbox" class="modelCheck" value="${m}" ${i===0?'checked':''}> <span>${m}</span></label>`).join('');
     $('defaultModel').innerHTML = data.models.map(m => `<option value="${m}">${m}</option>`).join('');
   }
 
@@ -168,6 +186,7 @@
     if ($('payerPlatform').checked) allowedPayers.push('PLATFORM_CREDIT');
     const allowedModels = [...document.querySelectorAll('.modelCheck:checked')].map(x => x.value);
     const paid = $('accessMode').value !== 'FREE';
+    const portable = $('deliveryMode').value !== 'HOSTED_ONLY';
     return {
       display_name: $('name').value.trim(), slug: $('slug').value.trim(), description: $('description').value,
       instructions: $('instructions').value, welcome: $('welcome').value,
@@ -182,6 +201,9 @@
       platform_budget_id_env: $('budgetEnv').value.trim(), platform_hard_limit_usd: $('hardLimitUsd').value || '0',
       default_model: $('defaultModel').value, allowed_models: allowedModels,
       delivery_mode: $('deliveryMode').value,
+      portable_protection: $('portableProtection').value,
+      portable_seat_limit: Number($('portableSeatLimit').value || 1),
+      portable_copy_risk_acknowledged: portable ? $('portableRiskAck').checked : false,
       max_input_chars: Number($('maxInput').value), max_history_messages: Number($('maxHistory').value), max_output_tokens: Number($('maxOutput').value)
     };
   }
@@ -217,7 +239,7 @@
 
   $('downloadPackage').addEventListener('click', () => lastValid && download(lastValid.data.exports.package_filename, JSON.stringify(lastValid.data.package, null, 2) + '\n', 'application/json'));
   $('downloadInstructions').addEventListener('click', () => lastValid && download(lastValid.data.exports.instructions_filename, lastValid.draft.instructions + '\n', 'text/markdown'));
-  ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform'].forEach(id => $(id).addEventListener('change', toggle));
+  ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform','deliveryMode','portableProtection'].forEach(id => $(id).addEventListener('change', toggle));
   toggle();
   loadOptions().catch(err => { $('status').innerHTML = `<span class="bad">${err.message}</span>`; });
 })();
