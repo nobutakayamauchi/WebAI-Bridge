@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlparse
@@ -52,12 +53,22 @@ def _https_url(value: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
+def _has_secret_material(value) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, (str, bytes, list, dict, tuple, set)):
+        return len(value) > 0
+    if isinstance(value, (int, float)):
+        return value != 0
+    return True
+
+
 def _secret_key_paths(value, prefix="") -> list[str]:
     found: list[str] = []
     if isinstance(value, dict):
         for key, child in value.items():
             path = f"{prefix}.{key}" if prefix else str(key)
-            if str(key).lower() in SENSITIVE_PACKAGE_KEYS and child not in {None, "", False, 0}:
+            if str(key).lower() in SENSITIVE_PACKAGE_KEYS and _has_secret_material(child):
                 found.append(path)
             found.extend(_secret_key_paths(child, path))
     elif isinstance(value, list):
@@ -68,6 +79,10 @@ def _secret_key_paths(value, prefix="") -> list[str]:
 
 def _finding(findings: list[dict], code: str, message: str, *, scope: str = "deployment") -> None:
     findings.append({"code": code, "scope": scope, "message": message})
+
+
+def _warning(warnings: list[dict], code: str, message: str, *, scope: str = "deployment") -> None:
+    warnings.append({"code": code, "scope": scope, "message": message})
 
 
 def _check_storage_path(
@@ -90,13 +105,48 @@ def _check_storage_path(
     parent = path.parent
     if not parent.exists():
         _finding(findings, f"{env_name}_PARENT_MISSING", f"Parent directory for {env_name} does not exist: {parent}")
-    elif not os.access(parent, os.W_OK):
-        _finding(findings, f"{env_name}_PARENT_NOT_WRITABLE", f"Parent directory for {env_name} is not writable by the current service user")
+    else:
+        if not os.access(parent, os.W_OK):
+            _finding(findings, f"{env_name}_PARENT_NOT_WRITABLE", f"Parent directory for {env_name} is not writable by the current service user")
+        parent_mode = stat.S_IMODE(parent.stat().st_mode)
+        if parent_mode & 0o002:
+            _finding(findings, f"{env_name}_PARENT_WORLD_WRITABLE", f"Parent directory for {env_name} must not be world-writable")
     if path.exists():
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & 0o077:
             _finding(findings, f"{env_name}_PERMISSIONS_TOO_OPEN", f"Existing {env_name} file must not grant group/world permissions")
     return path
+
+
+def _check_local_revision(
+    findings: list[dict], warnings: list[dict], *, runtime_dir: Path, revision: str
+) -> None:
+    repo_dir = runtime_dir.parent
+    if not (repo_dir / ".git").exists():
+        _warning(
+            warnings,
+            "LOCAL_REVISION_NOT_VERIFIABLE",
+            "Deployment artifact has no .git metadata; DEPLOYED_REVISION format is valid but cannot be compared to local HEAD",
+        )
+        return
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        actual = completed.stdout.strip()
+    except Exception as exc:
+        _finding(findings, "LOCAL_REVISION_CHECK_FAILED", f"Could not verify local Git HEAD: {exc}")
+        return
+    if actual.lower() != revision.lower():
+        _finding(
+            findings,
+            "DEPLOYED_REVISION_MISMATCH",
+            f"DEPLOYED_REVISION does not match local Git HEAD ({actual[:12]})",
+        )
 
 
 def _check_package(
@@ -140,19 +190,32 @@ def _check_package(
         except KeyError:
             _finding(findings, "MODEL_PRICE_MISSING", f"Allowed model has no current pricing evidence: {model}", scope=scope)
 
+    status = data.get("status")
+    access = data.get("access") or {}
+    paid = access.get("mode") != "FREE"
+    active = status == "active"
+    active_paid = active and paid
+
     knowledge = data.get("knowledge") or {}
-    if data.get("status") == "active" and knowledge.get("enabled"):
+    if active and knowledge.get("enabled"):
         vector_env = str(knowledge.get("vector_store_env") or "")
         if not vector_env or not (env.get(vector_env) or "").strip():
             _finding(findings, "ACTIVE_KNOWLEDGE_BINDING_MISSING", f"Active Knowledge package requires configured env: {vector_env or '<missing>'}", scope=scope)
 
-    status = data.get("status")
-    access = data.get("access") or {}
-    paid = access.get("mode") != "FREE"
-    active_paid = status == "active" and paid
-
     if status == "draft":
-        warnings.append({"code": "DRAFT_PACKAGE_PRESENT", "scope": scope, "message": "Draft package is present but must remain non-runnable"})
+        _warning(warnings, "DRAFT_PACKAGE_PRESENT", "Draft package is present but must remain non-runnable", scope=scope)
+
+    if active:
+        readiness = data.get("readiness") or {}
+        if readiness.get("configuration") != "VALIDATED":
+            _finding(findings, "ACTIVE_PACKAGE_CONFIGURATION_NOT_VALIDATED", "Active package must retain configuration=VALIDATED", scope=scope)
+        if readiness.get("runtime") != "READY":
+            _finding(findings, "ACTIVE_PACKAGE_RUNTIME_NOT_READY", "Active package must have readiness.runtime=READY", scope=scope)
+        if readiness.get("blockers"):
+            _finding(findings, "ACTIVE_PACKAGE_HAS_BLOCKERS", "Active package must not retain readiness blockers", scope=scope)
+        delivery = data.get("delivery") or {}
+        if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
+            _finding(findings, "ACTIVE_PACKAGE_DELIVERY_UNSUPPORTED", "Current commercial entrypoint can only activate Hosted-only runtime packages", scope=scope)
 
     if active_paid:
         if access.get("mode") not in {"BUY_ONCE", "SUBSCRIPTION"}:
@@ -168,17 +231,13 @@ def _check_package(
         if checkout.get("binding_verification") not in {"CREATOR_ATTESTED", "OPERATOR_REVIEWED", "STRIPE_VERIFIED"}:
             _finding(findings, "ACTIVE_PAID_CHECKOUT_UNVERIFIED", "Checkout product/price/currency/charge basis binding is not verified", scope=scope)
 
-        delivery = data.get("delivery") or {}
-        if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
-            _finding(findings, "ACTIVE_PAID_DELIVERY_UNSUPPORTED", "First commercial gateway requires active Hosted-only runtime", scope=scope)
-
         billing = data.get("billing") or {}
         if billing.get("allowed_payer_modes") != ["BYOK"] or billing.get("default_payer_mode") != "BYOK":
             _finding(findings, "ACTIVE_PAID_PAYER_NOT_BYOK_ONLY", "First commercial gateway requires BYOK-only inference", scope=scope)
         if billing.get("platform_credit"):
             _finding(findings, "ACTIVE_PAID_PLATFORM_SUBSIDY_PRESENT", "Active paid v0 must not carry PLATFORM_CREDIT subsidy config", scope=scope)
 
-    return status == "active", active_paid
+    return active, active_paid
 
 
 def run_preflight(
@@ -188,6 +247,7 @@ def run_preflight(
     config_dir: Path | None = None,
     schema_path: Path = PACKAGE_SCHEMA_FILE,
     pricing_file: Path = PRICING_FILE,
+    verify_git_revision: bool = True,
 ) -> dict:
     env = os.environ if env is None else env
     runtime_dir = runtime_dir.resolve()
@@ -213,6 +273,8 @@ def run_preflight(
     revision = (env.get("DEPLOYED_REVISION") or "").strip()
     if not REVISION_RE.fullmatch(revision):
         _finding(findings, "DEPLOYED_REVISION_UNESTABLISHED", "DEPLOYED_REVISION must be an explicit Git commit SHA")
+    elif verify_git_revision:
+        _check_local_revision(findings, warnings, runtime_dir=runtime_dir, revision=revision)
 
     if _truthy(env.get("WEB_AI_DIAGNOSTICS_ENABLED")):
         _finding(findings, "PUBLIC_DIAGNOSTICS_ENABLED", "WEB_AI_DIAGNOSTICS_ENABLED must be off for public deployment")
@@ -265,9 +327,9 @@ def run_preflight(
             active_paid_packages += int(active_paid)
 
     if active_packages == 0:
-        warnings.append({"code": "NO_ACTIVE_PACKAGES", "scope": "deployment", "message": "No active package is currently configured"})
+        _warning(warnings, "NO_ACTIVE_PACKAGES", "No active package is currently configured")
     if active_paid_packages == 0:
-        warnings.append({"code": "NO_ACTIVE_PAID_PACKAGES", "scope": "deployment", "message": "No active paid package is currently configured"})
+        _warning(warnings, "NO_ACTIVE_PAID_PACKAGES", "No active paid package is currently configured")
 
     return {
         "ok": not findings,
