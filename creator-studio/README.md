@@ -24,52 +24,71 @@ Default is disabled (`WEB_AI_STUDIO_ENABLED=0` / unset).
 2. Instructions
 3. Knowledge server-binding reference
 4. Access intent: free / allowance / paid / buy-once / subscription / per-use + JPY price intent
-5. Paid checkout intent: Stripe Payment Link self-setup or assisted setup
+5. External Stripe Payment Link metadata: self setup / assisted setup
 6. Inference payer: BYOK / bounded PLATFORM_CREDIT
 7. Platform-credit hard cap
 8. Allowed/default model policy from the current pricing registry
 9. Delivery: hosted-only / portable / both
-10. Validate against semantic/economic gates + canonical package JSON Schema
-11. Download package JSON + Instructions file
+10. Portable copy-control intent: license-only / activation-required
+11. Explicit portable copy-risk acknowledgement
+12. Validate against semantic/economic/distribution gates + canonical package JSON Schema
+13. Download package JSON + Instructions file
 
 The validation endpoint is **read/compute only**. Passing validation does not mutate the live runtime registry or write package files on the server.
 
 `access.price_amount_minor` is the AI/package utilization price intent. It is deliberately separate from inference cost/payer policy.
 
-## Stripe Payment Link boundary
-
-Paid packages use `STRIPE_PAYMENT_LINK` as the default early-stage external checkout rail.
-
-Two creator setup paths are represented:
-
-- `SELF_SETUP`: creator supplies a valid HTTPS Payment Link / Stripe custom checkout URL.
-- `ASSISTED_SETUP`: creator requests setup help; a draft can be exported with the link still pending.
-
-The package records checkout metadata only. Creator Studio does not handle card data, create Stripe objects, receive Stripe secret keys, or verify entitlement in thin v0.
-
-A Payment Link is **not** treated as proof that a user owns access. V0 paid fulfillment remains `MANUAL_HANDOFF`; verified webhook entitlement is a later gate.
-
-See `docs/BILLING_AND_CHECKOUT.md`.
-
 ## Why no Publish button yet
 
 Direct runtime mutation would create new requirements for authentication, authorization, rollback, secret handling, audit evidence and concurrent editing. Those responsibilities did not survive the v0 Raison d'être test.
 
-For v0 the operator places/deploys the two exported files deliberately. That manual bounded step is cheaper and safer than inventing an admin control plane before the package factory is proven.
+For v0 the operator places/deploys the exported files deliberately. That manual bounded step is cheaper and safer than inventing an admin control plane before the package factory is proven.
+
+## Checkout boundary
+
+Paid access uses creator-owned Stripe Payment Link metadata rather than custom card handling in WebAI Bridge.
+
+- `SELF_SETUP`: creator supplies a valid HTTPS checkout URL.
+- `ASSISTED_SETUP`: the package may remain link-pending as a draft while setup support helps create the product/price/link/post-payment flow.
+
+A Payment Link is **not** treated as verified entitlement in thin v0. Paid fulfillment remains manual handoff until a verified entitlement flow exists.
+
+## Portable distribution boundary
+
+Portable delivery is not the same as secure non-copyable delivery.
+
+```text
+HOSTED_ONLY
+  -> strongest current secrecy / entitlement / Safety boundary
+
+PORTABLE + LICENSE_ONLY
+  -> lowest friction
+  -> redistribution may be prohibited by terms
+  -> technical copy prevention is NOT GUARANTEED
+
+PORTABLE + ACTIVATION_REQUIRED
+  -> future account/license/seat entitlement intent
+  -> activation runtime NOT IMPLEMENTED in thin v0
+```
+
+Creator Studio therefore refuses portable export unless the creator explicitly acknowledges the copy/inspection/modification risk.
+
+If Instructions, Knowledge, or Safety enforcement must remain under strong control, choose `HOSTED_ONLY`.
+
+See `docs/DISTRIBUTION_SECURITY.md`.
 
 ## Warnings are part of the contract
 
 - Paid access modes are pricing intent only until commercial enforcement exists.
-- Payment Link does not prove entitlement; paid fulfillment is manual in thin v0.
-- Portable delivery means exported Instructions (and bundled Knowledge, when later supported) are visible to the recipient.
+- Payment Link does not prove entitlement.
+- Portable delivery makes package content available to the recipient and cannot honestly guarantee technical anti-copy protection.
+- Activation-required portable protection is contract-only until entitlement runtime exists.
 - Knowledge upload/index creation remains operator-assisted.
 - Platform-funded Knowledge is rejected unless an explicit positive tool-cost reserve exists.
 
 ## Non-goals
 
-- custom card collection / payment processor implementation
-- automated Stripe Payment Link API creation
-- Stripe webhook entitlement enforcement
+- custom card/payment handling
 - purchased credit wallet
 - subscription enforcement
 - creator payout
@@ -77,9 +96,14 @@ For v0 the operator places/deploys the two exported files deliberately. That man
 - analytics dashboard
 - multi-admin
 - server-side package publish/write
+- DRM / guaranteed anti-copy protection
+- activation server / device fingerprinting / revocation in thin v0
 
 ## Success test
 
-Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving the existing access-price / checkout / payer / budget / model boundaries.
+Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving access-price / checkout / payer / budget / model / distribution-authority boundaries.
 
-See `docs/GOAL_CREATOR_STUDIO_V0.md` for the frozen Ultimate Loop workload and METEOR cases.
+See:
+- `docs/GOAL_CREATOR_STUDIO_V0.md`
+- `docs/BILLING_AND_CHECKOUT.md`
+- `docs/DISTRIBUTION_SECURITY.md`
