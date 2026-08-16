@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import sys
@@ -71,6 +70,7 @@ def run_with_package(tmp_path: Path, package: dict, env: dict[str, str] | None =
         env=env or good_env(tmp_path),
         runtime_dir=RUNTIME_DIR,
         config_dir=config,
+        verify_git_revision=False,
     )
 
 
@@ -153,9 +153,9 @@ def test_preflight_accepts_operator_reviewed_assisted_checkout(tmp_path):
     assert result["ok"] is True
 
 
-def test_preflight_rejects_secret_material_embedded_in_package_json(tmp_path):
+def test_preflight_rejects_secret_material_embedded_in_package_json_even_when_nested_container(tmp_path):
     package = paid_active_package()
-    package["secret"] = "do-not-store-this"
+    package["credential"] = {"value": "do-not-store-this"}
     result = run_with_package(tmp_path, package)
     assert "SECRET_MATERIAL_IN_PACKAGE" in codes(result)
 
@@ -173,6 +173,27 @@ def test_preflight_rejects_active_knowledge_without_server_binding(tmp_path):
     package["knowledge"]["vector_store_env"] = "MISSING_VECTOR_STORE_ID"
     result = run_with_package(tmp_path, package)
     assert "ACTIVE_KNOWLEDGE_BINDING_MISSING" in codes(result)
+
+
+def test_preflight_rejects_active_package_with_stale_blocked_readiness(tmp_path):
+    package = paid_active_package()
+    package["readiness"]["runtime"] = "BLOCKED"
+    package["readiness"]["blockers"] = ["SOMETHING_STALE"]
+    result = run_with_package(tmp_path, package)
+    assert "ACTIVE_PACKAGE_RUNTIME_NOT_READY" in codes(result)
+    assert "ACTIVE_PACKAGE_HAS_BLOCKERS" in codes(result)
+
+
+def test_preflight_rejects_active_portable_package_on_current_commercial_entrypoint(tmp_path):
+    package = paid_active_package()
+    package["delivery"]["mode"] = "PORTABLE_LICENSE"
+    package["delivery"]["runtime_implementation"] = "NOT_IMPLEMENTED"
+    package["delivery"]["protection_level"] = "LEVEL_1_LICENSE_ONLY"
+    package["delivery"]["portable_protection"] = "LICENSE_ONLY"
+    package["delivery"]["copy_protection_guarantee"] = "NOT_GUARANTEED"
+    package["delivery"]["portable_copy_risk_acknowledged"] = True
+    result = run_with_package(tmp_path, package)
+    assert "ACTIVE_PACKAGE_DELIVERY_UNSUPPORTED" in codes(result)
 
 
 def test_draft_package_is_not_treated_as_active(tmp_path):
