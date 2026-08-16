@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 import app as core
 from byok_sessions import ByokSessionStore
+from checkout_state import CheckoutStateStore
 from commercial_studio import adapt_manual_hosted_entitlement
 from entitlement_cookies import sign_entitlement_cookie, verify_entitlement_cookie
 from entitlements import (
@@ -28,12 +29,15 @@ from stripe_checkout import (
     validate_paid_checkout_session,
     validate_payment_link_binding,
 )
+from stripe_webhook import StripeWebhookError, verify_stripe_signature
 
 BASE_DIR = Path(__file__).resolve().parent
 ENTITLEMENT_DB = Path(os.getenv("WEB_AI_ENTITLEMENT_DB", BASE_DIR / ".runtime" / "webai-entitlements.sqlite3"))
 HANDOFF_DB = Path(os.getenv("WEB_AI_HANDOFF_DB", ENTITLEMENT_DB.parent / "webai-handoff.sqlite3"))
+CHECKOUT_STATE_DB = Path(os.getenv("WEB_AI_CHECKOUT_STATE_DB", ENTITLEMENT_DB.parent / "webai-checkout-state.sqlite3"))
 PAID_PAGE = BASE_DIR / "static" / "paid.html"
 entitlements = EntitlementStore(ENTITLEMENT_DB)
+checkout_state = CheckoutStateStore(CHECKOUT_STATE_DB)
 SUPPORTED_MANUAL_ACCESS = {"BUY_ONCE", "SUBSCRIPTION"}
 BYOK_SESSION_TTL_SECONDS = int(os.getenv("WEB_AI_BYOK_SESSION_TTL_SECONDS", "900"))
 BYOK_SESSION_MAX = int(os.getenv("WEB_AI_BYOK_SESSION_MAX", "1000"))
@@ -41,6 +45,7 @@ HANDOFF_TTL_SECONDS = int(os.getenv("WEB_AI_HANDOFF_TTL_SECONDS", "600"))
 ENTITLEMENT_COOKIE_MAX_AGE_SECONDS = int(os.getenv("WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS", "31536000"))
 ENTITLEMENT_COOKIE_SECRET = os.getenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", "")
 STRIPE_SECRET_KEY = os.getenv("WEB_AI_STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("WEB_AI_STRIPE_WEBHOOK_SECRET", "")
 byok_sessions = ByokSessionStore(ttl_seconds=BYOK_SESSION_TTL_SECONDS, max_sessions=BYOK_SESSION_MAX)
 handoffs = HandoffTicketStore(HANDOFF_DB, ttl_seconds=HANDOFF_TTL_SECONDS)
 
@@ -70,54 +75,24 @@ def entitlement_cookie_name(slug: str) -> str:
 
 
 def set_byok_cookie(response: Response, *, slug: str, token: str) -> None:
-    response.set_cookie(
-        key=byok_cookie_name(slug),
-        value=token,
-        max_age=BYOK_SESSION_TTL_SECONDS,
-        httponly=True,
-        secure=not insecure_http_allowed(),
-        samesite="strict",
-        path="/",
-    )
+    response.set_cookie(key=byok_cookie_name(slug), value=token, max_age=BYOK_SESSION_TTL_SECONDS, httponly=True, secure=not insecure_http_allowed(), samesite="strict", path="/")
 
 
 def clear_byok_cookie(response: Response, *, slug: str) -> None:
-    response.delete_cookie(
-        key=byok_cookie_name(slug),
-        httponly=True,
-        secure=not insecure_http_allowed(),
-        samesite="strict",
-        path="/",
-    )
+    response.delete_cookie(key=byok_cookie_name(slug), httponly=True, secure=not insecure_http_allowed(), samesite="strict", path="/")
 
 
 def set_entitlement_cookie(response: Response, *, slug: str, payment_ref: str) -> None:
     if len(ENTITLEMENT_COOKIE_SECRET) < 32:
         raise HTTPException(status_code=503, detail="Automatic buyer handoff is not configured")
-    cookie = sign_entitlement_cookie(
-        secret=ENTITLEMENT_COOKIE_SECRET,
-        package_id=slug,
-        payment_ref=payment_ref,
-    )
-    response.set_cookie(
-        key=entitlement_cookie_name(slug),
-        value=cookie,
-        max_age=ENTITLEMENT_COOKIE_MAX_AGE_SECONDS,
-        httponly=True,
-        secure=not insecure_http_allowed(),
-        samesite="lax",
-        path="/",
-    )
+    cookie = sign_entitlement_cookie(secret=ENTITLEMENT_COOKIE_SECRET, package_id=slug, payment_ref=payment_ref)
+    response.set_cookie(key=entitlement_cookie_name(slug), value=cookie, max_age=ENTITLEMENT_COOKIE_MAX_AGE_SECONDS, httponly=True, secure=not insecure_http_allowed(), samesite="lax", path="/")
 
 
 def entitlement_payment_ref(request: Request, *, slug: str) -> str | None:
     if len(ENTITLEMENT_COOKIE_SECRET) < 32:
         return None
-    return verify_entitlement_cookie(
-        secret=ENTITLEMENT_COOKIE_SECRET,
-        cookie=request.cookies.get(entitlement_cookie_name(slug)),
-        package_id=slug,
-    )
+    return verify_entitlement_cookie(secret=ENTITLEMENT_COOKIE_SECRET, cookie=request.cookies.get(entitlement_cookie_name(slug)), package_id=slug)
 
 
 def free_page_response() -> FileResponse:
@@ -136,14 +111,7 @@ def paid_page_response() -> FileResponse:
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; "
-        "script-src 'unsafe-inline'; "
-        "style-src 'unsafe-inline'; "
-        "connect-src 'self'; "
-        "img-src 'self' data:; "
-        "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
-    )
+    response.headers["Content-Security-Policy"] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     return response
 
 
@@ -155,10 +123,7 @@ def secure_handoff_html(body: str, *, status_code: int = 200) -> HTMLResponse:
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
-        "frame-ancestors 'none'; form-action 'self'"
-    )
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     return response
 
 
@@ -207,8 +172,28 @@ def resolve_byok_package(slug: str, buyer_token: str | None, *, request: Request
     return app_config
 
 
+def ensure_payment_entitlement(*, verified: dict) -> str:
+    package_id = verified["package_id"]
+    payment_ref = verified["payment_ref"]
+    state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
+    if state == PAYMENT_MISSING:
+        try:
+            entitlements.issue(package_id=package_id, buyer_ref=verified["buyer_ref"], payment_ref=payment_ref)
+        except ValueError:
+            state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
+            if state != PAYMENT_ACTIVE:
+                raise HTTPException(status_code=409, detail="Checkout fulfillment could not establish an active entitlement") from None
+    elif state in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
+        raise HTTPException(status_code=403, detail="This payment's buyer access is no longer active")
+    elif state != PAYMENT_ACTIVE:
+        raise HTTPException(status_code=409, detail="Unknown entitlement lifecycle state")
+    if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
+        raise HTTPException(status_code=409, detail="Checkout fulfillment did not establish an active entitlement")
+    return payment_ref
+
+
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.6.0-browser-handoff")
+app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.7.0-stripe-webhook-fulfillment")
 
 
 @app.get("/health")
@@ -232,14 +217,53 @@ def creator_studio_options() -> dict:
     options["manual_paid_hosted_entitlement"] = "BUY_ONCE_OR_SUBSCRIPTION__HOSTED__BYOK_ONLY"
     options["byok_credential_transport"] = "EPHEMERAL_PROCESS_MEMORY_HTTPONLY_COOKIE"
     options["buyer_entitlement_transport"] = "SIGNED_HTTPONLY_COOKIE_WITH_LEGACY_BEARER_FALLBACK"
-    options["stripe_auto_handoff"] = "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_BROWSER_TRANSFER_V1"
+    options["stripe_auto_handoff"] = "BUY_ONCE_WEBHOOK_PLUS_REDIRECT_SINGLE_BROWSER_CLAIM_V1"
+    options["stripe_webhook_fulfillment"] = "CHECKOUT_SESSION_COMPLETED_OR_ASYNC_SUCCEEDED__IDEMPOTENT"
     return options
 
 
 @app.post("/api/studio/validate")
 def creator_studio_validate(payload: core.StudioDraft, request: Request) -> dict:
-    result = core.creator_studio_validate(payload=payload, request=request)
-    return adapt_manual_hosted_entitlement(result)
+    return adapt_manual_hosted_entitlement(core.creator_studio_validate(payload=payload, request=request))
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None, alias="Stripe-Signature")) -> dict:
+    require_secure_transport(request)
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Stripe webhook verification is not configured")
+    raw = await request.body()
+    try:
+        event = verify_stripe_signature(payload=raw, signature_header=stripe_signature or "", endpoint_secret=STRIPE_WEBHOOK_SECRET)
+    except StripeWebhookError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    event_id = event["id"]
+    event_type = str(event.get("type") or "")
+    if checkout_state.event_processed(event_id):
+        return {"received": True, "duplicate": True}
+    if event_type not in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
+        checkout_state.mark_event_processed(event_id=event_id, event_type=event_type or "ignored")
+        return {"received": True, "ignored": True}
+    session = ((event.get("data") or {}).get("object") or {})
+    if not isinstance(session, dict) or session.get("payment_status") != "paid":
+        checkout_state.mark_event_processed(event_id=event_id, event_type=event_type)
+        return {"received": True, "ignored_unpaid": True}
+    slug = str((session.get("metadata") or {}).get("webai_package_id") or "")
+    try:
+        app_config = core.registry.get(slug)
+    except KeyError:
+        checkout_state.mark_event_processed(event_id=event_id, event_type=event_type)
+        return {"received": True, "ignored_unknown_package": True}
+    ensure_commercial_hosted_runnable(app_config)
+    try:
+        verified = validate_paid_checkout_session(session=session, app_config=app_config)
+        payment_link = retrieve_payment_link(secret_key=STRIPE_SECRET_KEY, payment_link_id=verified["payment_link_id"])
+        validate_payment_link_binding(payment_link=payment_link, app_config=app_config)
+    except StripeCheckoutError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    ensure_payment_entitlement(verified=verified)
+    checkout_state.mark_event_processed(event_id=event_id, event_type=event_type)
+    return {"received": True, "fulfilled": True, "package_id": slug}
 
 
 @app.get("/checkout/complete/{slug}")
@@ -256,48 +280,18 @@ def checkout_complete(slug: str, session_id: str, request: Request):
         raise HTTPException(status_code=503, detail="Stripe Checkout verification is not configured")
     if len(ENTITLEMENT_COOKIE_SECRET) < 32:
         raise HTTPException(status_code=503, detail="Automatic buyer handoff is not configured")
-
     try:
         session = retrieve_checkout_session(secret_key=STRIPE_SECRET_KEY, session_id=session_id)
         verified = validate_paid_checkout_session(session=session, app_config=app_config)
-        payment_link = retrieve_payment_link(
-            secret_key=STRIPE_SECRET_KEY,
-            payment_link_id=verified["payment_link_id"],
-        )
+        payment_link = retrieve_payment_link(secret_key=STRIPE_SECRET_KEY, payment_link_id=verified["payment_link_id"])
         validate_payment_link_binding(payment_link=payment_link, app_config=app_config)
     except StripeCheckoutError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-
-    payment_ref = verified["payment_ref"]
-    package_id = verified["package_id"]
-    state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
-    if state == PAYMENT_MISSING:
-        try:
-            entitlements.issue(
-                package_id=package_id,
-                buyer_ref=verified["buyer_ref"],
-                payment_ref=payment_ref,
-            )
-        except ValueError:
-            state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
-            if state == PAYMENT_ACTIVE:
-                raise HTTPException(status_code=409, detail="This Checkout Session has already been claimed") from None
-            raise HTTPException(status_code=409, detail="Checkout fulfillment could not establish an active entitlement") from None
-    elif state == PAYMENT_ACTIVE:
+    payment_ref = ensure_payment_entitlement(verified=verified)
+    if not checkout_state.claim_checkout(session_id=verified["checkout_session_id"], package_id=verified["package_id"], payment_ref=payment_ref):
         raise HTTPException(status_code=409, detail="This Checkout Session has already been claimed")
-    elif state in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
-        raise HTTPException(status_code=403, detail="This payment's buyer access is no longer active")
-    else:
-        raise HTTPException(status_code=409, detail="Unknown entitlement lifecycle state")
-
-    if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
-        raise HTTPException(status_code=409, detail="Checkout fulfillment did not establish an active entitlement")
-
-    ticket = handoffs.issue(package_id=package_id, payment_ref=payment_ref)
-    response = RedirectResponse(
-        url=f"/checkout/handoff/{slug}?ticket={quote(ticket, safe='')}",
-        status_code=303,
-    )
+    ticket = handoffs.issue(package_id=verified["package_id"], payment_ref=payment_ref)
+    response = RedirectResponse(url=f"/checkout/handoff/{slug}?ticket={quote(ticket, safe='')}", status_code=303)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
     return response
@@ -311,10 +305,7 @@ def checkout_handoff(slug: str, ticket: str, request: Request):
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
     activate_url = f"/checkout/activate/{quote(slug, safe='')}?ticket={quote(ticket, safe='')}"
-    body = f"""<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title>
-<style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}}main{{max-width:720px;margin:auto;padding:40px 28px}}h1{{font-size:32px}}p{{font-size:18px;line-height:1.65;color:#555}}.card{{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}}a{{display:block;background:#111;color:#fff;text-decoration:none;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}}small{{display:block;margin-top:20px;color:#777;line-height:1.5}}</style></head>
-<body><main><h1>購入確認が完了しました</h1><div class="card"><p><strong>Safariでこの画面を開いてから</strong>、下のボタンを押してください。</p><p>アプリ内ブラウザの場合は、Safariアイコン／「Safariで開く」を使ってこの画面をSafariへ移してください。</p><a href="{html.escape(activate_url, quote=True)}">この端末でAIを使う</a><small>この受け渡しリンクは約10分・1回だけ有効です。購入者コードを入力する必要はありません。</small></div></main></body></html>"""
+    body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}}main{{max-width:720px;margin:auto;padding:40px 28px}}h1{{font-size:32px}}p{{font-size:18px;line-height:1.65;color:#555}}.card{{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}}a{{display:block;background:#111;color:#fff;text-decoration:none;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}}small{{display:block;margin-top:20px;color:#777;line-height:1.5}}</style></head><body><main><h1>購入確認が完了しました</h1><div class="card"><p><strong>Safariでこの画面を開いてから</strong>、下のボタンを押してください。</p><p>アプリ内ブラウザの場合は、Safariアイコン／「Safariで開く」を使ってこの画面をSafariへ移してください。</p><a href="{html.escape(activate_url, quote=True)}">この端末でAIを使う</a><small>この受け渡しリンクは約10分・1回だけ有効です。購入者コードを入力する必要はありません。</small></div></main></body></html>"""
     return secure_handoff_html(body)
 
 
@@ -371,20 +362,14 @@ def create_byok_session(payload: ByokSessionRequest, request: Request, response:
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     set_byok_cookie(response, slug=payload.slug, token=session.token)
-    return {
-        "connected": True,
-        "expires_in_seconds": BYOK_SESSION_TTL_SECONDS,
-        "storage": "PROCESS_MEMORY_ONLY",
-        "browser_api_key_retained": False,
-    }
+    return {"connected": True, "expires_in_seconds": BYOK_SESSION_TTL_SECONDS, "storage": "PROCESS_MEMORY_ONLY", "browser_api_key_retained": False}
 
 
 @app.get("/api/byok/session/{slug}")
 def byok_session_status(slug: str, request: Request, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
     resolve_byok_package(slug, buyer_token, request=request)
-    token = request.cookies.get(byok_cookie_name(slug))
-    result = byok_sessions.status(package_id=slug, token=token)
+    result = byok_sessions.status(package_id=slug, token=request.cookies.get(byok_cookie_name(slug)))
     result["storage"] = "PROCESS_MEMORY_ONLY"
     return result
 
@@ -393,19 +378,13 @@ def byok_session_status(slug: str, request: Request, buyer_token: str | None = H
 def forget_byok_session(slug: str, request: Request, response: Response, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement")) -> dict:
     require_secure_transport(request)
     resolve_byok_package(slug, buyer_token, request=request)
-    token = request.cookies.get(byok_cookie_name(slug))
-    forgotten = byok_sessions.forget(token)
+    forgotten = byok_sessions.forget(request.cookies.get(byok_cookie_name(slug)))
     clear_byok_cookie(response, slug=slug)
     return {"forgotten": forgotten, "connected": False}
 
 
 @app.post("/api/chat")
-def paid_chat(
-    payload: core.ChatRequest,
-    request: Request,
-    buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"),
-    legacy_byok_api_key: str | None = Header(default=None, alias="X-Provider-API-Key"),
-) -> dict:
+def paid_chat(payload: core.ChatRequest, request: Request, buyer_token: str | None = Header(default=None, alias="X-WebAI-Entitlement"), legacy_byok_api_key: str | None = Header(default=None, alias="X-Provider-API-Key")) -> dict:
     require_secure_transport(request)
     try:
         app_config = core.registry.get(payload.slug)
@@ -420,8 +399,7 @@ def paid_chat(
                 raise HTTPException(status_code=400, detail="Direct BYOK header transport is disabled; create an ephemeral BYOK session first")
             byok_api_key = legacy_byok_api_key
         else:
-            session_token = request.cookies.get(byok_cookie_name(payload.slug))
-            byok_api_key = byok_sessions.resolve(package_id=payload.slug, token=session_token)
+            byok_api_key = byok_sessions.resolve(package_id=payload.slug, token=request.cookies.get(byok_cookie_name(payload.slug)))
             if not byok_api_key:
                 raise HTTPException(status_code=402, detail="BYOK session is missing or expired; reconnect your provider key")
     return core.chat(payload=payload, request=request, byok_api_key=byok_api_key)
