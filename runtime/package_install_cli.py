@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import stat
 import tempfile
 from pathlib import Path
 
@@ -55,6 +54,17 @@ def _validate_installable_package(data: dict) -> str:
         raise SystemExit("Package id must equal slug for operator install v0")
     if data.get("status") != "draft":
         raise SystemExit("Only draft Studio exports may be installed; install must never activate a package")
+
+    readiness = data.get("readiness") or {}
+    if readiness.get("configuration") != "VALIDATED":
+        raise SystemExit("Draft package must retain readiness.configuration=VALIDATED")
+    if readiness.get("runtime") == "READY":
+        raise SystemExit("Draft package must not claim readiness.runtime=READY before explicit activation")
+
+    access = data.get("access") or {}
+    if access.get("commercial_enforcement") == "ENTITLEMENT_ENFORCED":
+        raise SystemExit("Draft package must not claim ENTITLEMENT_ENFORCED before explicit activation")
+
     expected = f"apps/{slug}.instructions.md"
     if data.get("instructions_file") != expected:
         raise SystemExit(f"instructions_file must be canonical: {expected}")
@@ -131,6 +141,12 @@ def install_package(
     _reject_destination_symlink(instructions_dest, "Instructions")
 
     existing_status = _load_existing_status(package_dest)
+    orphan_instructions = instructions_dest.exists() and existing_status is None
+    if orphan_instructions:
+        raise SystemExit(
+            "Refusing to overwrite orphan Instructions without a classifiable destination Package JSON"
+        )
+
     if existing_status is not None:
         if existing_status not in NONRUNNABLE_REPLACE_STATES:
             raise SystemExit(
