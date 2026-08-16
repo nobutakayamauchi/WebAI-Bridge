@@ -17,10 +17,13 @@ Environment=WEB_AI_LEDGER_PATH=/var/lib/webai-bridge/ledger.sqlite3
 Environment=WEB_AI_DIAGNOSTICS_ENABLED=0
 Environment=WEB_AI_STUDIO_ENABLED=0
 Environment=WEB_AI_ALLOW_INSECURE_HTTP=0
-# Set DEPLOYED_REVISION to the exact deployed Git commit/revision in the real unit/env file.
+# REQUIRED: set DEPLOYED_REVISION to the exact deployed Git commit SHA in the real unit/env file.
 # Set provider/budget/vector-store secrets through the host secret/environment mechanism; never commit them here.
 # Public traffic MUST terminate HTTPS at a trusted reverse proxy on this host.
 # Only localhost proxy headers are trusted so arbitrary internet clients cannot spoof X-Forwarded-Proto=https.
+# Preflight exits non-zero if Deployment Identity, state paths, package contract, pricing evidence,
+# Knowledge binding, or paid-hosted authority is not safe enough to start.
+ExecStartPre=/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/deployment_preflight.py
 ExecStart=/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=3

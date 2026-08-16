@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from decimal import Decimal, ROUND_CEILING
@@ -61,6 +62,10 @@ class BudgetLedger:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     def _connect(self):
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)

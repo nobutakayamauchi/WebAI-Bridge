@@ -47,6 +47,35 @@ def atomic_write_json(path: Path, data: dict) -> None:
     os.replace(temp, path)
 
 
+def verify_checkout_before_activation(checkout: dict, *, checkout_reviewed: bool) -> None:
+    if checkout.get("provider") != "STRIPE_PAYMENT_LINK":
+        raise SystemExit("Paid hosted v0 requires Stripe Payment Link metadata")
+    if not checkout.get("payment_link_url"):
+        raise SystemExit("Stripe Payment Link must exist before activation")
+
+    setup_mode = checkout.get("setup_mode")
+    binding = checkout.get("binding_verification")
+
+    if setup_mode == "SELF_SETUP":
+        if binding not in {"CREATOR_ATTESTED", "STRIPE_VERIFIED"}:
+            raise SystemExit("SELF_SETUP checkout must be creator-attested before activation")
+        return
+
+    if setup_mode == "ASSISTED_SETUP":
+        if binding == "MANUAL_REVIEW_REQUIRED":
+            if not checkout_reviewed:
+                raise SystemExit(
+                    "ASSISTED_SETUP requires --checkout-reviewed after verifying product, amount, currency, and charge basis"
+                )
+            checkout["binding_verification"] = "OPERATOR_REVIEWED"
+            return
+        if binding in {"OPERATOR_REVIEWED", "STRIPE_VERIFIED"}:
+            return
+        raise SystemExit("ASSISTED_SETUP checkout is still pending or unreviewed")
+
+    raise SystemExit("Paid hosted v0 requires SELF_SETUP or ASSISTED_SETUP checkout")
+
+
 def cmd_activate_config(args) -> int:
     path, data = load_package_config(args.config)
 
@@ -63,12 +92,10 @@ def cmd_activate_config(args) -> int:
         raise SystemExit("Manual paid hosted v0 requires BYOK-only inference")
 
     checkout = access.get("checkout") or {}
-    if checkout.get("provider") != "STRIPE_PAYMENT_LINK":
-        raise SystemExit("Paid hosted v0 requires Stripe Payment Link metadata")
-    if checkout.get("setup_mode") == "SELF_SETUP" and checkout.get("binding_verification") != "CREATOR_ATTESTED":
-        raise SystemExit("SELF_SETUP checkout must be creator-attested before activation")
-    if not checkout.get("payment_link_url"):
-        raise SystemExit("Stripe Payment Link must exist before activation")
+    verify_checkout_before_activation(
+        checkout,
+        checkout_reviewed=bool(getattr(args, "checkout_reviewed", False)),
+    )
 
     data["status"] = "active"
     data["access"]["commercial_enforcement"] = "ENTITLEMENT_ENFORCED"
@@ -87,6 +114,7 @@ def cmd_activate_config(args) -> int:
     print(json.dumps({
         "activated": True,
         "package_id": data["slug"],
+        "checkout_binding_verification": data["access"]["checkout"]["binding_verification"],
         "runtime": "READY",
         "commercial": "MANUAL_REVIEW_REQUIRED",
         "next": "Verify one buyer payment manually, then run issue with --payment-verified and a non-secret payment reference.",
@@ -161,6 +189,11 @@ def main() -> int:
 
     activate = sub.add_parser("activate-config", help="Explicitly activate a Studio-exported paid hosted BYOK package")
     activate.add_argument("--config", required=True, help="Path to deployed package JSON")
+    activate.add_argument(
+        "--checkout-reviewed",
+        action="store_true",
+        help="Required for ASSISTED_SETUP after operator verifies product, amount, currency and charge basis",
+    )
     activate.set_defaults(func=cmd_activate_config)
 
     issue = sub.add_parser("issue", help="Issue a high-entropy bearer entitlement after manual payment verification")
