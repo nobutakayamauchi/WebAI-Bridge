@@ -15,8 +15,12 @@ ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 AccessMode = Literal["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"]
 PayerMode = Literal["BYOK", "PLATFORM_CREDIT"]
-DeliveryMode = Literal["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"]
-PortableProtection = Literal["LICENSE_ONLY", "ACTIVATION_REQUIRED"]
+ProtectionLevel = Literal[
+    "LEVEL_1_LICENSE_ONLY",
+    "LEVEL_2_BUYER_PASSPHRASE",
+    "LEVEL_3_DUAL_CONTROL_ACTIVATION",
+    "LEVEL_4_HOSTED_ONLY",
+]
 CheckoutSetupMode = Literal["SELF_SETUP", "ASSISTED_SETUP"]
 
 
@@ -51,10 +55,11 @@ class StudioDraft(BaseModel):
 
     default_model: str = Field(min_length=1, max_length=200)
     allowed_models: list[str] = Field(min_length=1, max_length=32)
-    delivery_mode: DeliveryMode = "HOSTED_ONLY"
-    portable_protection: PortableProtection = "LICENSE_ONLY"
+
+    protection_level: ProtectionLevel = "LEVEL_4_HOSTED_ONLY"
     portable_seat_limit: int = Field(default=1, ge=1, le=100_000)
     portable_copy_risk_acknowledged: bool = False
+
     welcome: str = Field(default="", max_length=500)
 
     max_input_chars: int = Field(default=12_000, ge=1, le=1_000_000)
@@ -85,6 +90,82 @@ def _schema_validator(schema_path: str) -> Draft202012Validator:
     schema = json.loads(Path(schema_path).read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
+
+
+def _build_delivery(draft: StudioDraft, errors: list[str], warnings: list[str]) -> dict:
+    level = draft.protection_level
+
+    if level == "LEVEL_4_HOSTED_ONLY":
+        return {
+            "mode": "HOSTED_ONLY",
+            "protection_level": level,
+            "portable_protection": "NOT_APPLICABLE",
+            "buyer_passphrase_required": False,
+            "seller_activation_required": False,
+            "seat_limit": 0,
+            "protection_implementation": "AVAILABLE",
+            "copy_protection_guarantee": "HOSTED_BOUNDARY",
+            "portable_copy_risk_acknowledged": False,
+        }
+
+    if not draft.portable_copy_risk_acknowledged:
+        errors.append(
+            "Protection levels 1-3 require explicit acknowledgement that portable packages cannot guarantee technical copy prevention."
+        )
+
+    warnings.append(
+        "Portable delivery gives the recipient package contents; copying, inspection, modification, or Safety removal cannot be made impossible."
+    )
+
+    if level == "LEVEL_1_LICENSE_ONLY":
+        warnings.append(
+            "Level 1 relies on license/terms only. Technical copy prevention is NOT GUARANTEED."
+        )
+        return {
+            "mode": "PORTABLE_LICENSE",
+            "protection_level": level,
+            "portable_protection": "LICENSE_ONLY",
+            "buyer_passphrase_required": False,
+            "seller_activation_required": False,
+            "seat_limit": 0,
+            "protection_implementation": "AVAILABLE",
+            "copy_protection_guarantee": "NOT_GUARANTEED",
+            "portable_copy_risk_acknowledged": draft.portable_copy_risk_acknowledged,
+        }
+
+    if level == "LEVEL_2_BUYER_PASSPHRASE":
+        warnings.append(
+            "Level 2 buyer-passphrase encryption is CONTRACT_ONLY in thin v0; encryption/passphrase enrollment is NOT IMPLEMENTED."
+        )
+        return {
+            "mode": "PORTABLE_LICENSE",
+            "protection_level": level,
+            "portable_protection": "BUYER_PASSPHRASE",
+            "buyer_passphrase_required": True,
+            "seller_activation_required": False,
+            "seat_limit": 0,
+            "protection_implementation": "CONTRACT_ONLY",
+            "copy_protection_guarantee": "PLANNED_ENCRYPTION",
+            "portable_copy_risk_acknowledged": draft.portable_copy_risk_acknowledged,
+        }
+
+    if level == "LEVEL_3_DUAL_CONTROL_ACTIVATION":
+        warnings.append(
+            "Level 3 buyer passphrase + seller-signed activation is CONTRACT_ONLY in thin v0; encryption, activation, seat enforcement, revocation, and exit-key behavior are NOT IMPLEMENTED."
+        )
+        return {
+            "mode": "PORTABLE_LICENSE",
+            "protection_level": level,
+            "portable_protection": "ACTIVATION_REQUIRED",
+            "buyer_passphrase_required": True,
+            "seller_activation_required": True,
+            "seat_limit": draft.portable_seat_limit,
+            "protection_implementation": "CONTRACT_ONLY",
+            "copy_protection_guarantee": "PLANNED_ENTITLEMENT",
+            "portable_copy_risk_acknowledged": draft.portable_copy_risk_acknowledged,
+        }
+
+    raise AssertionError(f"Unhandled protection level: {level}")
 
 
 def build_package(
@@ -146,15 +227,7 @@ def build_package(
     if unknown_models:
         errors.append(f"Models missing from the current pricing registry: {', '.join(unknown_models)}")
 
-    portable = draft.delivery_mode != "HOSTED_ONLY"
-    if portable:
-        if not draft.portable_copy_risk_acknowledged:
-            errors.append("Portable delivery requires explicit acknowledgement that technical copy prevention is not guaranteed.")
-        warnings.append("Portable delivery exposes/copies the exported Instructions and any bundled Knowledge to the recipient.")
-        if draft.portable_protection == "LICENSE_ONLY":
-            warnings.append("LICENSE_ONLY portable delivery relies on license/terms; technical copy prevention is NOT GUARANTEED.")
-        elif draft.portable_protection == "ACTIVATION_REQUIRED":
-            warnings.append("Portable activation is contract-only in v0; entitlement/activation enforcement is NOT IMPLEMENTED and must not be sold as technically protected yet.")
+    delivery = _build_delivery(draft, errors, warnings)
 
     if errors:
         raise StudioValidationError(errors, warnings)
@@ -173,23 +246,6 @@ def build_package(
             "payment_link_url": draft.stripe_payment_link_url,
             "fulfillment": "MANUAL_HANDOFF",
             "entitlement_verification": "NOT_IMPLEMENTED",
-        }
-
-    if portable:
-        delivery = {
-            "mode": draft.delivery_mode,
-            "portable_protection": draft.portable_protection,
-            "seat_limit": draft.portable_seat_limit,
-            "copy_protection_guarantee": "NOT_GUARANTEED" if draft.portable_protection == "LICENSE_ONLY" else "PLANNED_ENTITLEMENT",
-            "portable_copy_risk_acknowledged": True,
-        }
-    else:
-        delivery = {
-            "mode": "HOSTED_ONLY",
-            "portable_protection": "NOT_APPLICABLE",
-            "seat_limit": 0,
-            "copy_protection_guarantee": "HOSTED_BOUNDARY",
-            "portable_copy_risk_acknowledged": False,
         }
 
     package = {
