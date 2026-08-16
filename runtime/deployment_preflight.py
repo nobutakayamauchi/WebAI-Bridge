@@ -154,12 +154,15 @@ def _check_package(
     warnings: list[dict],
     *,
     path: Path,
-    runtime_dir: Path,
+    config_dir: Path,
     schema_path: Path,
     pricing: PricingRegistry,
     env: Mapping[str, str],
 ) -> tuple[bool, bool]:
     scope = f"package:{path.name}"
+    if path.is_symlink() or not path.is_file():
+        _finding(findings, "PACKAGE_FILE_UNSAFE", f"Package config must be a regular non-symlink file: {path}", scope=scope)
+        return False, False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -172,13 +175,17 @@ def _check_package(
 
     slug = str(data.get("slug") or "")
     instructions_file = str(data.get("instructions_file") or "")
+    instruction_path: Path | None = None
     if slug and instructions_file:
         expected = f"apps/{slug}.instructions.md"
         if instructions_file != expected:
             _finding(findings, "INSTRUCTIONS_PATH_NONCANONICAL", f"Expected {expected}, got {instructions_file}", scope=scope)
-        instruction_path = runtime_dir / instructions_file
-        if not instruction_path.exists():
-            _finding(findings, "INSTRUCTIONS_FILE_MISSING", f"Instructions file does not exist: {instruction_path}", scope=scope)
+        instruction_root = config_dir.resolve()
+        instruction_path = (instruction_root / f"{slug}.instructions.md").resolve()
+        if instruction_path.parent != instruction_root:
+            _finding(findings, "INSTRUCTIONS_PATH_ESCAPE", "Instructions path escapes configured app authority root", scope=scope)
+        elif instruction_path.is_symlink() or not instruction_path.exists() or not instruction_path.is_file():
+            _finding(findings, "INSTRUCTIONS_FILE_MISSING", f"Instructions file does not exist as a regular non-symlink file: {instruction_path}", scope=scope)
 
     for secret_path in _secret_key_paths(data):
         _finding(findings, "SECRET_MATERIAL_IN_PACKAGE", f"Secret-like value must not be embedded in Package JSON: {secret_path}", scope=scope)
@@ -216,6 +223,13 @@ def _check_package(
         delivery = data.get("delivery") or {}
         if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
             _finding(findings, "ACTIVE_PACKAGE_DELIVERY_UNSUPPORTED", "Current commercial entrypoint can only activate Hosted-only runtime packages", scope=scope)
+        if instruction_path is not None and instruction_path.exists():
+            mode = stat.S_IMODE(instruction_path.stat().st_mode)
+            if mode & 0o077:
+                _finding(findings, "ACTIVE_INSTRUCTIONS_PERMISSIONS_TOO_OPEN", "Active hosted Instructions must not grant group/world permissions", scope=scope)
+        package_mode = stat.S_IMODE(path.stat().st_mode)
+        if package_mode & 0o077:
+            _finding(findings, "ACTIVE_PACKAGE_PERMISSIONS_TOO_OPEN", "Active Package JSON must not grant group/world permissions", scope=scope)
 
     if active_paid:
         if access.get("mode") not in {"BUY_ONCE", "SUBSCRIPTION"}:
@@ -309,7 +323,12 @@ def run_preflight(
     active_paid_packages = 0
     if not config_dir.exists():
         _finding(findings, "CONFIG_DIR_MISSING", f"Package config directory does not exist: {config_dir}")
+    elif config_dir.is_symlink() or not config_dir.is_dir():
+        _finding(findings, "CONFIG_DIR_UNSAFE", f"Package config authority must be a regular non-symlink directory: {config_dir}")
     else:
+        config_mode = stat.S_IMODE(config_dir.stat().st_mode)
+        if config_mode & 0o002:
+            _finding(findings, "CONFIG_DIR_WORLD_WRITABLE", "Package config authority must not be world-writable")
         package_files = sorted(config_dir.glob("*.json"))
         if not package_files:
             _finding(findings, "NO_PACKAGE_CONFIGS", f"No package JSON files found in {config_dir}")
@@ -318,7 +337,7 @@ def run_preflight(
                 findings,
                 warnings,
                 path=path,
-                runtime_dir=runtime_dir,
+                config_dir=config_dir,
                 schema_path=schema_path,
                 pricing=pricing,
                 env=env,
