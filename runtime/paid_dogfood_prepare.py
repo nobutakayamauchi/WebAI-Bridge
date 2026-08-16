@@ -118,7 +118,7 @@ def prepare_paid_dogfood(*, config_dir: Path, payment_link_url: str, price_jpy: 
             "config_dir": str(config_dir),
             "reused": True,
             "active": True,
-            "entitlement_issued": False,
+            "entitlement_issuance_by_preparer": "NONE",
             "secrets_in_output": False,
         }
 
@@ -179,7 +179,7 @@ def prepare_paid_dogfood(*, config_dir: Path, payment_link_url: str, price_jpy: 
         "config_dir": str(config_dir),
         "reused": False,
         "active": True,
-        "entitlement_issued": False,
+        "entitlement_issuance_by_preparer": "NONE",
         "secrets_in_output": False,
     }
 
