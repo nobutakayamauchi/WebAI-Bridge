@@ -28,9 +28,9 @@ Default is disabled (`WEB_AI_STUDIO_ENABLED=0` / unset).
 6. Inference payer: BYOK / bounded PLATFORM_CREDIT
 7. Platform-credit hard cap
 8. Allowed/default model policy from the current pricing registry
-9. Delivery: hosted-only / portable / both
-10. Portable copy-control intent: license-only / activation-required
-11. Explicit portable copy-risk acknowledgement
+9. One four-level distribution-protection selector
+10. Explicit portable copy-risk acknowledgement for Levels 1-3
+11. Seat intent for Level 3
 12. Validate against semantic/economic/distribution gates + canonical package JSON Schema
 13. Download package JSON + Instructions file
 
@@ -53,27 +53,37 @@ Paid access uses creator-owned Stripe Payment Link metadata rather than custom c
 
 A Payment Link is **not** treated as verified entitlement in thin v0. Paid fulfillment remains manual handoff until a verified entitlement flow exists.
 
-## Portable distribution boundary
+## Four protection levels
 
-Portable delivery is not the same as secure non-copyable delivery.
+Creator Studio intentionally presents one simple choice instead of exposing multiple technical protection knobs.
 
 ```text
-HOSTED_ONLY
-  -> strongest current secrecy / entitlement / Safety boundary
+LEVEL 1 — LICENSE ONLY
+portable package
+terms/license only
+technical copy protection NOT GUARANTEED
 
-PORTABLE + LICENSE_ONLY
-  -> lowest friction
-  -> redistribution may be prohibited by terms
-  -> technical copy prevention is NOT GUARANTEED
+LEVEL 2 — BUYER PASSPHRASE
+portable package
+planned encryption + buyer passphrase
+CONTRACT_ONLY / NOT IMPLEMENTED in thin v0
 
-PORTABLE + ACTIVATION_REQUIRED
-  -> future account/license/seat entitlement intent
-  -> activation runtime NOT IMPLEMENTED in thin v0
+LEVEL 3 — DUAL CONTROL ACTIVATION
+portable package
+planned buyer passphrase + seller/WebAI Bridge signed activation
+seat intent
+CONTRACT_ONLY / NOT IMPLEMENTED in thin v0
+
+LEVEL 4 — HOSTED ONLY
+no portable package handoff
+strongest current secrecy / entitlement / Safety boundary
 ```
 
-Creator Studio therefore refuses portable export unless the creator explicitly acknowledges the copy/inspection/modification risk.
+Level 3 does **not** mean handing a seller password to the buyer. The future seller-side factor is a signed/server-verifiable activation state whose signing secret remains outside the package.
 
-If Instructions, Knowledge, or Safety enforcement must remain under strong control, choose `HOSTED_ONLY`.
+Actual buyer passphrases, seller signing keys, Stripe secrets, and provider secrets must never be written into Package JSON.
+
+Creator Studio refuses Levels 1-3 unless the creator explicitly acknowledges that portable delivery cannot guarantee perfect technical prevention of copying, inspection, modification, or Safety removal.
 
 See `docs/DISTRIBUTION_SECURITY.md`.
 
@@ -82,7 +92,8 @@ See `docs/DISTRIBUTION_SECURITY.md`.
 - Paid access modes are pricing intent only until commercial enforcement exists.
 - Payment Link does not prove entitlement.
 - Portable delivery makes package content available to the recipient and cannot honestly guarantee technical anti-copy protection.
-- Activation-required portable protection is contract-only until entitlement runtime exists.
+- Level 2 encryption/passphrase behavior is contract-only until implemented.
+- Level 3 activation/seat/revocation/exit behavior is contract-only until implemented.
 - Knowledge upload/index creation remains operator-assisted.
 - Platform-funded Knowledge is rejected unless an explicit positive tool-cost reserve exists.
 
@@ -97,11 +108,12 @@ See `docs/DISTRIBUTION_SECURITY.md`.
 - multi-admin
 - server-side package publish/write
 - DRM / guaranteed anti-copy protection
-- activation server / device fingerprinting / revocation in thin v0
+- encryption/passphrase secret storage in thin v0
+- activation server / seller signing infrastructure / revocation in thin v0
 
 ## Success test
 
-Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving access-price / checkout / payer / budget / model / distribution-authority boundaries.
+Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving access-price / checkout / payer / budget / model / four-level distribution-authority boundaries.
 
 See:
 - `docs/GOAL_CREATOR_STUDIO_V0.md`
