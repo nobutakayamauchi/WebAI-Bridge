@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import sqlite3
 import time
@@ -26,6 +27,10 @@ class EntitlementStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     def _connect(self):
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -40,6 +45,7 @@ class EntitlementStore:
                     token_hash TEXT PRIMARY KEY,
                     package_id TEXT NOT NULL,
                     buyer_ref TEXT NOT NULL DEFAULT '',
+                    payment_ref TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     issued_at INTEGER NOT NULL,
                     expires_at INTEGER,
@@ -47,27 +53,49 @@ class EntitlementStore:
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(entitlements)").fetchall()}
+            if "payment_ref" not in columns:
+                conn.execute("ALTER TABLE entitlements ADD COLUMN payment_ref TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entitlements_package ON entitlements(package_id, status)"
             )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_entitlements_active_payment
+                ON entitlements(package_id, payment_ref)
+                WHERE status='active' AND payment_ref <> ''
+                """
+            )
 
-    def issue(self, *, package_id: str, buyer_ref: str = "", expires_at: int | None = None) -> str:
+    def issue(
+        self,
+        *,
+        package_id: str,
+        buyer_ref: str = "",
+        payment_ref: str = "",
+        expires_at: int | None = None,
+    ) -> str:
         if not package_id:
             raise ValueError("package_id is required")
+        if not payment_ref:
+            raise ValueError("payment_ref is required")
         now = int(time.time())
         if expires_at is not None and expires_at <= now:
             raise ValueError("expires_at must be in the future")
         token = TOKEN_PREFIX + secrets.token_urlsafe(32)
         digest = token_hash(token)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO entitlements
-                (token_hash, package_id, buyer_ref, status, issued_at, expires_at, revoked_at)
-                VALUES (?, ?, ?, 'active', ?, ?, NULL)
-                """,
-                (digest, package_id, buyer_ref, now, expires_at),
-            )
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO entitlements
+                    (token_hash, package_id, buyer_ref, payment_ref, status, issued_at, expires_at, revoked_at)
+                    VALUES (?, ?, ?, ?, 'active', ?, ?, NULL)
+                    """,
+                    (digest, package_id, buyer_ref, payment_ref, now, expires_at),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("an active entitlement already exists for this package/payment_ref") from exc
         return token
 
     def authorize(self, *, package_id: str, token: str | None, now: int | None = None) -> bool:
@@ -103,11 +131,26 @@ class EntitlementStore:
             )
         return cursor.rowcount == 1
 
+    def revoke_payment(self, *, package_id: str, payment_ref: str) -> int:
+        if not package_id or not payment_ref:
+            return 0
+        now = int(time.time())
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE entitlements
+                SET status='revoked', revoked_at=?
+                WHERE package_id=? AND payment_ref=? AND status='active'
+                """,
+                (now, package_id, payment_ref),
+            )
+        return int(cursor.rowcount)
+
     def list_for_package(self, package_id: str) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT package_id, buyer_ref, status, issued_at, expires_at, revoked_at,
+                SELECT package_id, buyer_ref, payment_ref, status, issued_at, expires_at, revoked_at,
                        substr(token_hash, 1, 12) AS token_hash_prefix
                 FROM entitlements
                 WHERE package_id=?
