@@ -6,7 +6,14 @@
   "status": "dogfood",
   "instructions_file": "apps/migration-fixture-ai.instructions.md",
   "knowledge": {"enabled": false, "vector_store_env": "MIGRATION_FIXTURE_VECTOR_STORE_ID", "reserve_tokens": 0, "platform_tool_reserve_usd_micros": 0},
-  "access": {"mode": "FREE", "currency": "JPY", "price_amount_minor": 0, "included_runs": 0, "commercial_enforcement": "NOT_IMPLEMENTED"},
+  "access": {
+    "mode": "FREE",
+    "currency": "JPY",
+    "price_amount_minor": 0,
+    "included_runs": 0,
+    "commercial_enforcement": "NOT_IMPLEMENTED",
+    "checkout": {"provider": "NONE", "setup_mode": "NONE", "payment_link_url": "", "fulfillment": "NONE", "entitlement_verification": "NOT_REQUIRED"}
+  },
   "billing": {"allowed_payer_modes": ["BYOK", "PLATFORM_CREDIT"], "default_payer_mode": "BYOK", "platform_credit": {"enabled": true, "budget_id_env": "MIGRATION_FIXTURE_BUDGET_ID", "hard_limit_usd_micros": 500000}},
   "routing": {"policy": "cost_aware_v0", "default_model": "gpt-5.6-luna", "allowed_models": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]},
   "delivery": {"mode": "HOSTED_ONLY"},
