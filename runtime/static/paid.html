@@ -47,11 +47,11 @@
     <div id="byok-connect">
       <strong>推論用 OpenAI API Key（BYOK）</strong>
       <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
-      <button id="connect-byok" type="button">APIキーを一時接続</button>
-      <p>APIキー本体は接続時だけHTTPSでWebAI Bridgeへ送信します。接続後、この入力欄から即時消去し、ブラウザにはHttpOnlyの一時セッションIDだけを保持します。</p>
+      <button id="connect-byok" type="button">APIを接続</button>
+      <p>接続するとAPIキー入力欄は消えます。キー本体は接続時だけHTTPSでWebAI Bridgeへ送信し、ブラウザにはHttpOnlyの一時セッションIDだけを保持します。</p>
     </div>
     <div id="byok-status" hidden>
-      <strong>✓ APIキーを一時接続済み</strong>
+      <strong>✓ API接続済み</strong>
       <p id="byok-expiry"></p>
       <button id="forget-byok" class="secondary" type="button">キーを忘れる</button>
     </div>
@@ -176,7 +176,7 @@
 
   async function submitMessage(text) {
     if (!unlocked) return;
-    if (!byokConnected) { add('system', '先にOpenAI API Keyを一時接続してください。'); return; }
+    if (!byokConnected) { add('system', '先にAPIを接続してください。'); return; }
     const prior = conversationHistory.slice();
     add('user', text);
     $('input').value = '';
