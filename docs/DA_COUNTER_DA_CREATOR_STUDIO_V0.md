@@ -1,240 +1,204 @@
 # DA / Counter-DA — Creator Studio thin v0
 
 Date: 2026-08-16
-Status: `ACTIVE_REVIEW / MERGE_GATE_REOPENED`
-
-This record attacks the current Creator Studio + runtime design, then attacks the attacks. Only findings that survive Counter-DA are allowed to reopen the merge gate.
+Status: `COUNTER_DA_COMPLETE / SURVIVING_FINDINGS_FIXED_OR_EXPLICITLY_DEFERRED`
 
 ## Method
 
 ```text
 DA
-→ assume the current design will be abused, misunderstood, retried, copied, shared or misconfigured
-→ identify a concrete failure
+→ assume abuse, sharing, retry, copy, stale state, misconfiguration and misleading UX
+→ produce a concrete failure
 
 Counter-DA
-→ ask whether the failure is already bounded by the frozen v0 workload
+→ attack the finding itself
 → reject speculative scope creep
-→ retain only failures that violate a current invariant or would make a future-safe contract materially harder
+→ keep only findings that violate a current invariant or would poison the future contract
 ```
 
-## Findings that survived Counter-DA
+The merge gate was reopened for findings that survived Counter-DA. Current disposition follows.
 
-### F1 — `draft` package can become executable merely by being placed in the runtime config directory
+## Surviving findings and disposition
 
-DA:
-Creator Studio emits `status = draft`, but the current runtime does not enforce status before serving `/a/{slug}` or `/api/chat`.
+### F1 — draft could become runnable
 
-Counter-DA:
-The v0 operator handoff is intentionally manual, but manual placement is not equivalent to an explicit activation decision. A draft must remain non-runnable by default.
+Finding: Creator Studio exports `status=draft`, while runtime previously did not enforce it.
 
-Decision: `FIX NOW`.
-
-Invariant:
+Resolution: `FIXED`.
 
 ```text
 DRAFT != RUNNABLE
 ```
 
-### F2 — paid hosted package has no entitlement enforcement
+Runtime now accepts only explicit runnable states (`dogfood` / `active`).
 
-DA:
-A paid hosted package can be reached by anyone who has the URL. With BYOK, a copied URL can bypass the package access price entirely. With platform credit, a copied URL can also consume the funded pool.
+### F2 — paid hosted URL bypassed access entitlement
 
-Counter-DA:
-The docs already say `PAYMENT LINK != VERIFIED ENTITLEMENT`, but runtime behavior must also fail closed. A warning is insufficient if the runtime still executes the package.
+Finding: a shared URL could bypass access price; platform-funded use could also consume creator/platform budget.
 
-Decision: `FIX NOW`.
+Resolution: `FIXED FAIL-CLOSED`.
 
-Invariant:
+Paid hosted execution is blocked until verified entitlement exists.
 
 ```text
-PAID HOSTED + NO ENTITLEMENT ENFORCEMENT != RUNNABLE COMMERCIAL PRODUCT
+PAID HOSTED + NO ENTITLEMENT != RUNNABLE
 ```
 
-### F3 — schema-valid / Studio-valid can be mistaken for sale-ready
+### F3 — config-valid looked like sale/run ready
 
-DA:
-Level 2/3 protection is contract-only, assisted checkout may be pending, paid hosted entitlement is not implemented, and platform-funded public use lacks per-user allocation. Yet validation currently returns `valid: true` without a machine-readable readiness distinction.
+Resolution: `FIXED`.
 
-Counter-DA:
-Studio must still be able to export future-intent drafts. Blocking all exports would destroy the thin-v0 purpose. The correct split is configuration validity vs commercial/runtime readiness.
-
-Decision: `FIX NOW`.
-
-Invariant:
+Studio now returns machine-readable:
+- configuration state;
+- runtime readiness;
+- commercial readiness;
+- blockers.
 
 ```text
-CONFIG_VALID != READY_TO_SELL != READY_TO_RUN
+CONFIG_VALID != READY_TO_RUN != READY_TO_SELL
 ```
 
-### F4 — hosted BYOK traverses the WebAI Bridge server
+### F4 — BYOK disclosure understated server visibility
 
-DA:
-The UI says the key is not stored and remains page-memory-only, but the browser sends it to `/api/chat`; the server therefore sees and forwards the provider credential.
+Finding: "not stored" did not explain that hosted BYOK traverses the WebAI Bridge server.
 
-Counter-DA:
-A hosted secret Instructions/Knowledge boundary requires a server-side provider call in the current architecture. Ephemeral proxy transport is acceptable for v0 if it is disclosed and not persisted/logged intentionally.
+Resolution: `FIXED DISCLOSURE + CONTRACT`.
 
-Decision: `FIX DISCLOSURE + CONTRACT NOW`.
-
-Invariant:
+Package metadata uses `SERVER_PROXY_EPHEMERAL`; Studio and runtime UI explain the server-proxy path.
 
 ```text
 NOT PERSISTED != NEVER SEEN BY SERVER
 ```
 
-### F5 — actual platform cost can exceed reservation while ledger charges only the reservation
+### F5 — actual cost over reservation could be hidden
 
-DA:
-Current settlement uses `min(actual_cost, reserved_cost)`. If provider-observed cost exceeds the estimate, the ledger under-reports spend even though the external provider charge already happened.
+Finding: settlement previously used `min(actual, reserved)`.
 
-Counter-DA:
-Reservation is deliberately conservative, but no estimator is a proof. Accounting truth must survive estimate failure even if a one-request overrun cannot be retroactively prevented.
+Resolution: `FIXED ACCOUNTING TRUTH`.
 
-Decision: `FIX NOW`.
+Observed actual cost is recorded even when it exceeds reservation and the budget hard limit after the provider charge has already happened. Later reservations then fail closed.
 
-Invariant:
+### F6 — history count bounded, history size unbounded
 
-```text
-OBSERVED ACTUAL COST > RESERVED COST
-→ RECORD ACTUAL COST
-→ DO NOT HIDE OVERRUN
-```
+Resolution: `FIXED` with `max_history_chars` plus message-count and current-message limits.
 
-### F6 — history count is bounded but history size is not
+### F7 — instructions path boundary weak
 
-DA:
-An attacker can submit the allowed number of history messages with extremely large contents. This can increase memory use and provider input cost far beyond the intended message limit.
+Resolution: `FIXED`.
 
-Counter-DA:
-This is directly inside the current chat endpoint and does not require future auth/payment work.
-
-Decision: `FIX NOW` with an explicit total-history-character limit.
-
-### F7 — `instructions_file` is not constrained to the package instruction directory
-
-DA:
-A manually supplied package can reference a relative path outside the intended app instruction directory. Future package ingestion would turn this into a file-read boundary problem.
-
-Counter-DA:
-Creator Studio currently emits a safe path, but runtime is the final authority and must reject non-canonical package paths.
-
-Decision: `FIX NOW`.
-
-Invariant:
+Runtime validates canonical package schema and requires exactly:
 
 ```text
-PACKAGE PATH != ARBITRARY SERVER FILE PATH
+apps/{slug}.instructions.md
 ```
 
-### F8 — Safety Kernel is described but not independently present in hosted runtime
+resolved inside the runtime app-instructions directory.
 
-DA:
-Distribution docs cite hosted Safety enforcement as a benefit, but runtime currently sends only creator package instructions plus the provider's own baseline safeguards.
+### F8 — Safety Kernel was described but absent
 
-Counter-DA:
-Provider safety exists, but it is not a WebAI Bridge Safety Kernel. Either implement a bounded immutable server-side policy layer or stop claiming one.
+Resolution: `FIXED WITH HONEST CLASSIFICATION`.
 
-Decision: `FIX NOW` by adding an immutable hosted server-instruction policy and classifying it honestly as prompt/policy enforcement, not perfect moderation or portable enforcement.
+`runtime/safety_kernel.md` is server-controlled and prepended before creator Instructions.
 
-### F9 — runtime diagnostics reveal filesystem/deployment details whenever reachable
+Classification:
 
-DA:
-`/runtime` exposes working directory and ledger path. Useful for Deployment Identity, unnecessary for public users.
+`PROMPT_POLICY_PLUS_PROVIDER_BASELINE`
 
-Counter-DA:
-Deployment Identity remains required, but it can be opt-in rather than public-by-default.
+No perfect moderation or portable enforcement is claimed.
 
-Decision: `FIX NOW` by making diagnostics opt-in.
+### F9 — runtime diagnostics were public-by-default
 
-### F10 — portable protection levels exist before a portable runtime/package actually exists
+Resolution: `FIXED`.
 
-DA:
-Creator Studio currently exports Package JSON + Instructions. It does not yet build a runnable ZIP/portable runtime. Portable contracts can also select server-only concepts such as PLATFORM_CREDIT or a server Vector Store environment binding that would not exist in a buyer-controlled environment.
+`/runtime` is disabled unless `WEB_AI_DIAGNOSTICS_ENABLED=1`.
 
-Counter-DA:
-Keeping portable intent in the schema is valuable because it freezes the product model. Claiming any portable level is currently runnable/sellable is not.
+### F10 — portable levels existed before portable runtime
 
-Decision: `FIX READINESS/CLAIMS NOW`; do not build the portable runtime inside this PR.
+Finding: Studio exports JSON + Instructions, not a runnable portable ZIP. Portable configs could also refer to server-only Knowledge/budget resources.
 
-Invariant:
+Resolution: `FIXED READINESS/CLAIMS`.
+
+All Levels 1-3 now carry `runtime_implementation=NOT_IMPLEMENTED` and readiness blockers. Portable runtime, portable Knowledge binding and portable server-funded payer paths are not claimed.
 
 ```text
 PORTABLE INTENT != PORTABLE RUNTIME
 SERVER SECRET/ENV BINDING != PORTABLE RESOURCE
 ```
 
-All portable levels remain contract/design intent until a real portable artifact, provider credential path, Knowledge packaging/remote binding policy, and acceptance test exist.
+### F11 — generic paid modes had ambiguous price basis
 
-### F11 — access price lacks a machine-readable charge basis for generic paid modes
+Resolution: `FIXED CONTRACT`.
 
-DA:
-`BUY_ONCE`, `SUBSCRIPTION`, and `PER_USE` have an obvious price basis, but `PAID` and `ALLOWANCE_THEN_PAID` only carry a number. The same `500 JPY` could mean one-time, monthly, per-run, or another contract. A Stripe URL cannot repair an ambiguous package contract.
+`charge_basis` is now explicit:
+- FREE -> FREE
+- BUY_ONCE -> ONE_TIME
+- SUBSCRIPTION -> MONTHLY
+- PER_USE -> PER_RUN
+- PAID -> UNSPECIFIED_PAID
+- ALLOWANCE_THEN_PAID -> UNSPECIFIED_AFTER_ALLOWANCE
 
-Counter-DA:
-The generic modes are still useful as draft intent and should not be deleted. The package must state the ambiguity instead of silently guessing.
-
-Decision: `FIX CONTRACT NOW` with a derived `charge_basis`; generic paid modes remain manual-review/not-ready until a specific commercial basis exists.
-
-Invariant:
+Generic paid modes receive a commercial blocker until made specific.
 
 ```text
 PRICE AMOUNT WITHOUT CHARGE BASIS != COMPLETE COMMERCIAL CONTRACT
 ```
 
-## Findings that did not justify immediate implementation
+## Counter-DA findings deliberately deferred
 
-### D1 — reservation IDs / idempotent settlement / crash leases
+These are real but did **not** justify turning thin v0 into a production control plane.
 
-Real concern:
-Aggregate `reserved_micros` has no reservation identity. Duplicate settlement/release or process crash can make recovery ambiguous.
+### D1 — reservation identity / idempotency / crash lease recovery
 
-Counter-DA result:
-Current synchronous single-call runtime does not retry settlement and a stuck reservation fails conservative. Production wallet/webhook/retry work must add reservation identity and lease recovery before multi-worker/retry semantics are claimed.
+Status: `PRODUCTION BLOCKER / DEFERRED`.
 
-Decision: `DEFERRED PRODUCTION BLOCKER`, not a reason to build the wallet control plane inside Creator Studio thin v0.
+Current synchronous path is acceptable for dogfood; retry/multi-worker wallet semantics must add reservation identity and recovery.
 
-### D2 — reverse-proxy-aware per-user rate limiting
+### D2 — reverse-proxy-aware distributed rate limiting
 
-Real concern:
-IP rate limiting is in-memory and may see the proxy address rather than the end user; multiple workers also have independent counters.
+Status: `DEPLOYMENT/PRODUCTION BLOCKER / DEFERRED`.
 
-Counter-DA result:
-Proper identity/rate policy depends on deployment topology and future auth. Keep current limiter as a dogfood guard only.
+Current in-memory IP limiter is only a dogfood guard.
 
-Decision: `DEPLOYMENT/PRODUCTION BLOCKER`.
+### D3 — automated Stripe product/price/cadence verification
 
-### D3 — Stripe price/mode API verification
+Status: `MANUAL V0 GATE / AUTOMATE LATER`.
 
-Real concern:
-An HTTPS Payment Link can point at the wrong product, amount, currency or billing cadence.
+Self setup requires creator attestation that checkout matches package configuration. Assisted setup remains pending/manual review. Automated Stripe verification belongs with later checkout/entitlement integration.
 
-Counter-DA result:
-V0 checkout is intentionally creator-owned/manual and carries no Stripe secret/API integration. Add manual binding/readiness evidence before sale; automated Stripe verification remains later.
+### D4 — creator/user budget allocation runtime
 
-Decision: `MANUAL V0 GATE / AUTOMATE LATER`.
+Status: `V1 RUNTIME BLOCKER`.
 
-### D4 — creator budget allocation runtime
+`EQUAL`, `INDIVIDUAL`, `INDIVIDUAL_THEN_SHARED` and per-user cap contracts remain frozen, but need authenticated user identity and wallet runtime.
 
-Real concern:
-A public funded pool can be consumed unfairly by one user even while the total hard cap prevents unlimited loss.
+### D5 — Level 2/3 cryptography/activation
 
-Counter-DA result:
-The canonical billing spec already freezes `EQUAL`, `INDIVIDUAL`, and `INDIVIDUAL_THEN_SHARED`. Correct enforcement needs user identity and belongs with USER_CREDIT/CREATOR_PAYS runtime.
+Status: `CONTRACT_ONLY / PORTABLE RUNTIME BLOCKED`.
 
-Decision: `V1 RUNTIME BLOCKER`, with v0 warning/ready-state treatment where relevant.
+No encryption, passphrase enrollment, activation signing, seat enforcement, revocation or exit-key behavior is represented as implemented.
 
-### D5 — Level 2/3 real cryptography and activation
+## Regression evidence required
 
-Real concern:
-Contract-only protection can be misunderstood as implemented protection.
+The following DA surfaces are regression-tested:
+- draft fail-closed;
+- paid hosted fail-closed;
+- portable hosted-runtime rejection;
+- readiness separation;
+- BYOK transport disclosure metadata;
+- Safety policy ordering;
+- runtime schema/path validation;
+- history total-size limit;
+- actual-cost reservation overrun accounting;
+- Stripe self-setup attestation;
+- checkout-pending blocker;
+- explicit charge basis;
+- Levels 1-3 portable runtime blockers;
+- portable server Knowledge/funded-payer blockers.
 
-Counter-DA result:
-Implementing encryption, signing infrastructure, entitlement, revocation and exit behavior now would violate the thin-v0 scope. Machine-readable readiness must block commercial claims instead.
+Latest verified CI before this documentation closeout: **45 pytest cases passed** with one non-blocking dependency deprecation warning.
 
-Decision: `KEEP CONTRACT-ONLY / BLOCK READY-TO-SELL CLAIM`.
+## Final merge-gate rule
 
-## Merge gate
+Return to `MERGE_READY` only if the latest branch head remains CI-green, mergeable, and not behind `main` after this documentation closeout.
 
-The PR may return to `MERGE_READY` only after F1-F11 are either implemented and regression-tested or explicitly downgraded in product claims so the current runtime cannot contradict the contract.
+No merge is authorized by this document.
