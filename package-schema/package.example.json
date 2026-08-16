@@ -16,7 +16,14 @@
     "currency": "JPY",
     "price_amount_minor": 0,
     "included_runs": 0,
-    "commercial_enforcement": "NOT_IMPLEMENTED"
+    "commercial_enforcement": "NOT_IMPLEMENTED",
+    "checkout": {
+      "provider": "NONE",
+      "setup_mode": "NONE",
+      "payment_link_url": "",
+      "fulfillment": "NONE",
+      "entitlement_verification": "NOT_REQUIRED"
+    }
   },
   "billing": {
     "allowed_payer_modes": ["BYOK", "PLATFORM_CREDIT"],
