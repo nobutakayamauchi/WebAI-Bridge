@@ -1,12 +1,10 @@
 # Creator Studio — thin v0
 
-Status: `BOUNDED_CHALLENGER / EXPORT_ONLY`
+Status: `BOUNDED_CHALLENGER / EXPORT_ONLY / READINESS_AWARE`
 
-Creator Studio replaces hand-editing AI Package JSON with one smartphone-friendly form while deliberately **not** becoming a full admin SaaS.
+Creator Studio replaces hand-edited AI Package JSON with a smartphone-oriented form. It deliberately does **not** become a full admin SaaS in v0.
 
 ## Run
-
-The existing runtime serves the Studio only when explicitly enabled:
 
 ```bash
 export WEB_AI_STUDIO_ENABLED=1
@@ -14,108 +12,149 @@ cd runtime
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
-Open `/studio`.
-
-Default is disabled (`WEB_AI_STUDIO_ENABLED=0` / unset).
+Open `/studio`. The Studio is disabled by default.
 
 ## What v0 does
 
 1. AI name / slug / description
 2. Instructions
-3. Knowledge server-binding reference
-4. Access intent: free / allowance / paid / buy-once / subscription / per-use + JPY price intent
-5. External Stripe Payment Link metadata: self setup / assisted setup
-6. Inference payer: BYOK / bounded PLATFORM_CREDIT
-7. Platform-credit hard cap
-8. Allowed/default model policy from the current pricing registry
-9. One four-level distribution-protection selector
-10. Explicit portable copy-risk acknowledgement for Levels 1-3
-11. Seat intent for Level 3
-12. Validate against semantic/economic/distribution gates + canonical package JSON Schema
-13. Download package JSON + Instructions file
+3. hosted Knowledge server-binding reference
+4. access intent + JPY price
+5. explicit access `charge_basis`
+6. Stripe Payment Link metadata: `SELF_SETUP` / `ASSISTED_SETUP`
+7. inference payer: BYOK / bounded PLATFORM_CREDIT
+8. model policy from the current pricing registry
+9. four distribution-protection presets
+10. semantic/economic/distribution validation
+11. machine-readable readiness
+12. Package JSON + Instructions export
 
-The validation endpoint is **read/compute only**. Passing validation does not mutate the live runtime registry or write package files on the server.
+Validation is read/compute only. It does not publish, mutate the runtime registry, call an AI provider, charge a card, or create an entitlement.
 
-`access.price_amount_minor` is the AI/package utilization price intent. It is deliberately separate from inference cost/payer policy.
+## Three different states
 
-## Why no Publish button yet
+A central DA finding is now a hard distinction:
 
-Direct runtime mutation would create new requirements for authentication, authorization, rollback, secret handling, audit evidence and concurrent editing. Those responsibilities did not survive the v0 Raison d'être test.
+```text
+CONFIG_VALID != READY_TO_RUN != READY_TO_SELL
+```
 
-For v0 the operator places/deploys the exported files deliberately. That manual bounded step is cheaper and safer than inventing an admin control plane before the package factory is proven.
+`CONFIG PASS` means the package contract is internally valid enough to export as a draft. It does **not** mean the package can be sold or executed safely.
+
+The validation result therefore reports:
+
+- configuration state;
+- runtime state;
+- commercial state;
+- explicit blockers.
+
+Creator Studio always exports `status = draft`. A draft is not runnable merely because an operator copies it into the runtime directory.
 
 ## Checkout boundary
 
-Paid access uses creator-owned Stripe Payment Link metadata rather than custom card handling in WebAI Bridge.
+Paid access may reference a creator-owned Stripe Payment Link.
 
-- `SELF_SETUP`: creator supplies a valid HTTPS checkout URL.
-- `ASSISTED_SETUP`: the package may remain link-pending as a draft while setup support helps create the product/price/link/post-payment flow.
+- `SELF_SETUP`: creator supplies an HTTPS checkout URL and explicitly attests that product, amount, currency and billing basis match the package configuration.
+- `ASSISTED_SETUP`: checkout may remain pending while setup support helps complete it.
 
-A Payment Link is **not** treated as verified entitlement in thin v0. Paid fulfillment remains manual handoff until a verified entitlement flow exists.
+Hard rules:
+
+```text
+PAYMENT LINK != VERIFIED ENTITLEMENT
+CHECKOUT URL != VERIFIED PRICE BINDING
+```
+
+V0 does not automatically inspect Stripe product/price state. Self-setup binding is creator-attested; assisted setup remains manual-review/pending. Paid hosted execution is fail-closed until verified entitlement exists.
+
+## Access price basis
+
+Specific modes have an explicit basis:
+
+- `BUY_ONCE` -> `ONE_TIME`
+- `SUBSCRIPTION` -> `MONTHLY`
+- `PER_USE` -> `PER_RUN`
+- `FREE` -> `FREE`
+
+Generic `PAID` and `ALLOWANCE_THEN_PAID` remain useful draft intent, but their charge basis is explicitly `UNSPECIFIED_*` and therefore a commercial-readiness blocker.
+
+## Hosted BYOK
+
+Hosted BYOK is ephemeral, not invisible:
+
+```text
+NOT PERSISTED != NEVER SEEN BY SERVER
+```
+
+The key is not intentionally persisted by this runtime, but each hosted request sends it through the WebAI Bridge server so the server can call the provider while keeping creator Instructions/Knowledge server-side.
 
 ## Four protection levels
 
-Creator Studio intentionally presents one simple choice instead of exposing multiple technical protection knobs.
-
 ```text
 LEVEL 1 — LICENSE ONLY
-portable package
-terms/license only
-technical copy protection NOT GUARANTEED
+portable contract intent
+no technical anti-copy guarantee
+portable runtime NOT IMPLEMENTED
 
 LEVEL 2 — BUYER PASSPHRASE
-portable package
-planned encryption + buyer passphrase
-CONTRACT_ONLY / NOT IMPLEMENTED in thin v0
+planned portable encryption + buyer passphrase
+CONTRACT_ONLY
+portable runtime NOT IMPLEMENTED
 
 LEVEL 3 — DUAL CONTROL ACTIVATION
-portable package
 planned buyer passphrase + seller/WebAI Bridge signed activation
 seat intent
-CONTRACT_ONLY / NOT IMPLEMENTED in thin v0
+CONTRACT_ONLY
+portable runtime NOT IMPLEMENTED
 
 LEVEL 4 — HOSTED ONLY
-no portable package handoff
-strongest current secrecy / entitlement / Safety boundary
+current hosted runtime boundary
+portable package is not handed out
+paid entitlement still NOT IMPLEMENTED
 ```
 
-Level 3 does **not** mean handing a seller password to the buyer. The future seller-side factor is a signed/server-verifiable activation state whose signing secret remains outside the package.
+Levels 1-3 require explicit creator acknowledgement of copy/inspection/modification risk. Current Studio exports contract metadata only; it does **not** generate a runnable portable ZIP.
 
-Actual buyer passphrases, seller signing keys, Stripe secrets, and provider secrets must never be written into Package JSON.
+Actual buyer passphrases, seller signing keys, provider secrets and Stripe secrets must never be written into Package JSON.
 
-Creator Studio refuses Levels 1-3 unless the creator explicitly acknowledges that portable delivery cannot guarantee perfect technical prevention of copying, inspection, modification, or Safety removal.
+## Hosted safety policy
 
-See `docs/DISTRIBUTION_SECURITY.md`.
+The hosted runtime prepends `runtime/safety_kernel.md` before creator package Instructions.
 
-## Warnings are part of the contract
+This is classified honestly as:
 
-- Paid access modes are pricing intent only until commercial enforcement exists.
-- Payment Link does not prove entitlement.
-- Portable delivery makes package content available to the recipient and cannot honestly guarantee technical anti-copy protection.
-- Level 2 encryption/passphrase behavior is contract-only until implemented.
-- Level 3 activation/seat/revocation/exit behavior is contract-only until implemented.
-- Knowledge upload/index creation remains operator-assisted.
-- Platform-funded Knowledge is rejected unless an explicit positive tool-cost reserve exists.
+`PROMPT_POLICY_PLUS_PROVIDER_BASELINE`
 
-## Non-goals
+It is not claimed to be perfect moderation, DRM, or an unremovable safeguard after portable/modifiable code leaves the hosted boundary.
 
-- custom card/payment handling
-- purchased credit wallet
-- subscription enforcement
-- creator payout
-- persistent BYOK key storage
-- analytics dashboard
-- multi-admin
-- server-side package publish/write
-- DRM / guaranteed anti-copy protection
-- encryption/passphrase secret storage in thin v0
-- activation server / seller signing infrastructure / revocation in thin v0
+## Cost/runtime limits surfaced by DA
 
-## Success test
+- total history characters are bounded, not only message count;
+- runtime package documents are validated against the canonical schema;
+- `instructions_file` is constrained to `apps/{slug}.instructions.md`;
+- runtime diagnostics are opt-in;
+- observed provider cost is recorded even when it exceeds a pre-call reservation;
+- current in-memory IP rate limiting is dogfood-only, not a production identity/quota system;
+- creator/user wallet allocation and reservation-id crash recovery remain later production gates.
 
-Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving access-price / checkout / payer / budget / model / four-level distribution-authority boundaries.
+## Non-goals in thin v0
+
+- custom card handling
+- purchased user wallet
+- automatic Stripe product/price verification
+- webhook entitlement enforcement
+- creator payouts
+- persistent BYOK secret storage
+- runnable portable ZIP generation
+- portable Knowledge packaging
+- package encryption/passphrase enrollment
+- activation/signing/revocation infrastructure
+- guaranteed DRM
+- production deployment claim
+
+## Evidence
 
 See:
 - `docs/GOAL_CREATOR_STUDIO_V0.md`
+- `docs/DA_COUNTER_DA_CREATOR_STUDIO_V0.md`
 - `docs/BILLING_AND_CHECKOUT.md`
 - `docs/DISTRIBUTION_SECURITY.md`
