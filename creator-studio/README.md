@@ -23,7 +23,7 @@ Default is disabled (`WEB_AI_STUDIO_ENABLED=0` / unset).
 1. AI name / slug / description
 2. Instructions
 3. Knowledge server-binding reference
-4. Access intent: free / allowance / paid / buy-once / subscription / per-use
+4. Access intent: free / allowance / paid / buy-once / subscription / per-use + JPY price intent
 5. Inference payer: BYOK / bounded PLATFORM_CREDIT
 6. Platform-credit hard cap
 7. Allowed/default model policy from the current pricing registry
@@ -32,6 +32,8 @@ Default is disabled (`WEB_AI_STUDIO_ENABLED=0` / unset).
 10. Download package JSON + Instructions file
 
 The validation endpoint is **read/compute only**. Passing validation does not mutate the live runtime registry or write package files on the server.
+
+`access.price_amount_minor` is the AI/package utilization price intent. It is deliberately separate from inference cost/payer policy.
 
 ## Why no Publish button yet
 
@@ -59,6 +61,6 @@ For v0 the operator places/deploys the two exported files deliberately. That man
 
 ## Success test
 
-Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving the existing payer/budget/model boundaries.
+Create a second schema-valid AI Package through `/studio` without manually rewriting runtime core code, while preserving the existing access-price / payer / budget / model boundaries.
 
 See `docs/GOAL_CREATOR_STUDIO_V0.md` for the frozen Ultimate Loop workload and METEOR cases.
