@@ -3,7 +3,7 @@
   "$id": "https://webai-bridge.local/schema/package.schema.json",
   "title": "WebAI Bridge AI Package",
   "type": "object",
-  "required": ["id", "slug", "display_name", "instructions_file", "billing", "routing", "delivery", "usage"],
+  "required": ["id", "slug", "display_name", "instructions_file", "access", "billing", "routing", "delivery", "usage"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
@@ -23,8 +23,11 @@
     },
     "access": {
       "type": "object",
+      "required": ["mode", "currency", "price_amount_minor", "commercial_enforcement"],
       "properties": {
         "mode": {"enum": ["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"]},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+        "price_amount_minor": {"type": "integer", "minimum": 0},
         "included_runs": {"type": "integer", "minimum": 0},
         "commercial_enforcement": {"type": "string"}
       },
