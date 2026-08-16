@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
+REPO_DIR = RUNTIME_DIR.parent
 if str(RUNTIME_DIR) not in sys.path:
     sys.path.insert(0, str(RUNTIME_DIR))
 
@@ -48,6 +51,18 @@ def base_payload():
         "max_history_messages": 12,
         "max_output_tokens": 2048,
     }
+
+
+def test_checked_in_package_configs_match_canonical_schema():
+    schema = json.loads((REPO_DIR / "package-schema" / "package.schema.json").read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    for path in [
+        REPO_DIR / "package-schema" / "package.example.json",
+        RUNTIME_DIR / "apps" / "migration-fixture-ai.json",
+    ]:
+        package = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(validator.iter_errors(package), key=lambda item: list(item.path))
+        assert errors == [], f"{path}: {[error.message for error in errors]}"
 
 
 def test_studio_is_opt_in(studio_client, monkeypatch):
