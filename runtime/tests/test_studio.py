@@ -34,6 +34,7 @@ def base_payload():
         "knowledge_reserve_tokens": 0,
         "knowledge_platform_tool_reserve_usd": "0",
         "access_mode": "FREE",
+        "access_price_jpy": 0,
         "included_runs": 0,
         "allowed_payer_modes": ["BYOK"],
         "default_payer_mode": "BYOK",
@@ -78,9 +79,56 @@ def test_byok_package_validates_without_runtime_write(studio_client):
     package = body["package"]
     assert package["slug"] == "second-ai"
     assert package["instructions_file"] == "apps/second-ai.instructions.md"
+    assert package["access"]["currency"] == "JPY"
+    assert package["access"]["price_amount_minor"] == 0
     assert package["billing"]["allowed_payer_modes"] == ["BYOK"]
     assert "platform_credit" not in package["billing"]
     assert set(appmod.registry.apps) == before
+
+
+def test_paid_access_requires_price_and_remains_independent_of_inference_payer(studio_client):
+    _, client = studio_client
+    payload = base_payload()
+    payload["access_mode"] = "PAID"
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "positive access price" in str(res.json()).lower()
+
+    payload["access_price_jpy"] = 1500
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 200
+    package = res.json()["package"]
+    assert package["access"]["price_amount_minor"] == 1500
+    assert package["billing"]["allowed_payer_modes"] == ["BYOK"]
+
+
+def test_free_access_cannot_carry_nonzero_price(studio_client):
+    _, client = studio_client
+    payload = base_payload()
+    payload["access_price_jpy"] = 500
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "zero access price" in str(res.json()).lower()
+
+
+def test_empty_payer_and_default_mismatch_fail(studio_client):
+    _, client = studio_client
+    payload = base_payload()
+    payload["allowed_payer_modes"] = []
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "payer" in str(res.json()).lower()
+
+    payload = base_payload()
+    payload.update({
+        "allowed_payer_modes": ["PLATFORM_CREDIT"],
+        "default_payer_mode": "BYOK",
+        "platform_budget_id_env": "SECOND_AI_BUDGET_ID",
+        "platform_hard_limit_usd": "1",
+    })
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "default payer" in str(res.json()).lower()
 
 
 def test_platform_credit_is_fixed_point_and_bounded(studio_client):
@@ -98,7 +146,7 @@ def test_platform_credit_is_fixed_point_and_bounded(studio_client):
     assert credit["hard_limit_usd_micros"] == 1_250_000
 
 
-def test_platform_credit_without_budget_fails_closed(studio_client):
+def test_platform_credit_without_budget_or_positive_cap_fails_closed(studio_client):
     _, client = studio_client
     payload = base_payload()
     payload.update({
@@ -109,6 +157,12 @@ def test_platform_credit_without_budget_fails_closed(studio_client):
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 422
     assert "budget environment" in str(res.json()).lower()
+
+    payload["platform_budget_id_env"] = "SECOND_AI_BUDGET_ID"
+    payload["platform_hard_limit_usd"] = "0"
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
+    assert "positive hard limit" in str(res.json()).lower()
 
 
 def test_platform_funded_knowledge_requires_cost_reserve(studio_client):
@@ -132,6 +186,7 @@ def test_allowance_requires_positive_free_runs(studio_client):
     _, client = studio_client
     payload = base_payload()
     payload["access_mode"] = "ALLOWANCE_THEN_PAID"
+    payload["access_price_jpy"] = 500
     payload["included_runs"] = 0
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 422
@@ -142,6 +197,7 @@ def test_paid_and_portable_are_explicit_warnings(studio_client):
     _, client = studio_client
     payload = base_payload()
     payload["access_mode"] = "PAID"
+    payload["access_price_jpy"] = 500
     payload["delivery_mode"] = "HOSTED_AND_PORTABLE"
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 200
@@ -164,3 +220,11 @@ def test_unknown_or_unallowed_model_fails(studio_client):
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 422
     assert "default model" in str(res.json()).lower()
+
+
+def test_oversized_instructions_are_rejected_before_builder(studio_client):
+    _, client = studio_client
+    payload = base_payload()
+    payload["instructions"] = "x" * 100_001
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 422
