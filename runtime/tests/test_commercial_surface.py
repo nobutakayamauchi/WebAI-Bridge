@@ -47,3 +47,10 @@ def test_free_and_paid_byok_surfaces_use_explicit_connect_then_hide_copy():
         assert "✓ API接続済み" in source
         assert "setByokState(true" in source
         assert "hidden = !byokConnected" in source or "hidden = !byok || !byokConnected" in source
+
+
+def test_touch_chat_composer_keeps_extra_gap_above_mobile_browser_chrome():
+    for name in ["index.html", "paid.html"]:
+        source = (RUNTIME_DIR / "static" / name).read_text(encoding="utf-8")
+        assert "@media (pointer: coarse)" in source
+        assert "32px + env(safe-area-inset-bottom)" in source

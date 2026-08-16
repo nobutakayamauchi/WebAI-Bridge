@@ -23,6 +23,7 @@
     .assistant { align-self: flex-start; background: #eee; color: #111; }
     .system { align-self: center; background: transparent; color: #777; font-size: 13px; padding: 4px; }
     form { display: flex; gap: 8px; padding: 12px max(12px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); border-top: 1px solid #ddd; background: #fff; }
+    @media (pointer: coarse) { form { padding-bottom: calc(32px + env(safe-area-inset-bottom)); } }
     textarea { flex: 1; resize: none; min-height: 44px; max-height: 140px; border: 1px solid #bbb; border-radius: 12px; padding: 11px; font: inherit; }
     button { min-width: 72px; border: 0; border-radius: 12px; padding: 10px 14px; font: inherit; font-weight: 700; background: #111; color: #fff; }
     button.secondary { background: #e9e9e9; color: #111; }
