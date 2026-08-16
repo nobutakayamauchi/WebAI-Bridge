@@ -35,6 +35,8 @@
     .level strong { display:block; margin-bottom:3px; }
     .level small { color:#666; line-height:1.4; display:block; }
     .status-note { background:#f6f7f8; border-radius:10px; padding:10px; font-size:13px; line-height:1.5; margin-top:10px; }
+    .readiness { display:grid; gap:6px; margin:8px 0 12px; }
+    .readiness div { background:#f6f7f8; border-radius:9px; padding:9px 10px; font-size:13px; line-height:1.4; }
     details { margin-top:10px; }
     summary { font-weight:700; cursor:pointer; }
   </style>
@@ -42,7 +44,7 @@
 <body>
 <main>
   <h1>Creator Studio</h1>
-  <p class="note">thin v0：AI Packageをスマホで設定・検証・書き出すだけ。サーバーへの保存、決済、公開操作はまだ行いません。</p>
+  <p class="note">thin v0：AI Packageをスマホで設定・検証・書き出します。設定PASSと「販売可能」「実行可能」は別判定です。</p>
 
   <form id="studioForm">
     <section>
@@ -61,7 +63,7 @@
         <label for="vectorEnv">Vector Storeの環境変数名</label><input id="vectorEnv" placeholder="MY_AI_VECTOR_STORE_ID">
         <label for="knowledgeReserveTokens">検索用token予約</label><input id="knowledgeReserveTokens" type="number" min="0" value="0">
         <label for="toolReserveUsd">運営負担時のKnowledge追加費用予約（USD/回）</label><input id="toolReserveUsd" type="number" min="0" step="0.000001" value="0">
-        <p class="note">thin v0ではファイルアップロード/index作成はoperator-assisted。運営負担でKnowledgeを使う場合、追加費用を0円扱いしません。</p>
+        <p class="note">現在のKnowledgeはhosted server bindingです。ファイルupload/index作成とportable Knowledge梱包はまだoperator-assisted / 未実装です。</p>
       </div>
     </section>
 
@@ -70,12 +72,13 @@
       <label for="accessMode">どう使わせる？</label>
       <select id="accessMode">
         <option value="FREE">無料</option>
-        <option value="ALLOWANCE_THEN_PAID">無料枠 → 有料</option>
-        <option value="PAID">最初から有料</option>
+        <option value="ALLOWANCE_THEN_PAID">無料枠 → 有料（課金基準は後で確定）</option>
+        <option value="PAID">最初から有料（課金基準は後で確定）</option>
         <option value="BUY_ONCE">買い切り</option>
         <option value="SUBSCRIPTION">月額</option>
         <option value="PER_USE">1回ごと</option>
       </select>
+      <div id="chargeBasisNote" class="status-note"></div>
       <div id="priceFields" class="hidden">
         <label for="accessPriceJpy">利用料（円）</label><input id="accessPriceJpy" type="number" min="1" step="1" value="500">
         <label for="checkoutSetupMode">Stripeの設定</label>
@@ -86,21 +89,24 @@
         <div id="selfCheckoutFields">
           <label for="stripePaymentLink">Stripe Payment Link</label>
           <input id="stripePaymentLink" type="url" inputmode="url" placeholder="https://buy.stripe.com/... または自分のStripe決済ドメイン">
+          <label class="check"><input type="checkbox" id="stripeLinkMatches"> <span>このPayment Linkの商品・金額・通貨・課金方式が上の設定と一致していることを確認しました。</span></label>
         </div>
-        <p id="assistedCheckoutNote" class="note hidden">サポートありを選んだ場合、リンク未作成でもドラフト検証できます。販売開始前にStripe商品・価格・Payment Link・支払後導線の作成を完了させます。</p>
+        <p id="assistedCheckoutNote" class="note hidden">サポートありを選んだ場合、リンク未作成でもドラフト検証できます。ただし販売Readyにはなりません。</p>
       </div>
       <div id="allowanceFields" class="hidden"><label for="includedRuns">無料回数</label><input id="includedRuns" type="number" min="1" value="10"></div>
-      <p class="note">ここはAIそのものの利用料。下の「推論代を誰が払う？」とは別です。thin v0のStripeリンクは外部決済で、支払済み権限の自動判定はまだ行いません。</p>
+      <p class="note">ここはAIそのものの利用料。推論代とは別です。Payment Linkは支払い場所であり、購入者Entitlementの証明ではありません。</p>
     </section>
 
     <section>
       <h2>4. 推論代を誰が払う？</h2>
       <label class="check"><input type="checkbox" id="payerByok" checked> <span>利用者のAPIキー（BYOK）</span></label>
+      <p class="note">Hosted BYOKではキーを保存しませんが、リクエスト時にWebAI Bridgeサーバーを経由してAI providerへ送ります。「保存しない」と「サーバーから見えない」は同じではありません。</p>
       <label class="check"><input type="checkbox" id="payerPlatform"> <span>運営/作者クレジット</span></label>
       <label for="defaultPayer">標準の支払元</label><select id="defaultPayer"><option value="BYOK">BYOK</option></select>
       <div id="platformFields" class="hidden">
         <label for="budgetEnv">Budget IDの環境変数名</label><input id="budgetEnv" placeholder="MY_AI_BUDGET_ID">
         <label for="hardLimitUsd">運営負担の絶対上限（USD）</label><input id="hardLimitUsd" type="number" min="0" step="0.01" value="1.00">
+        <p class="note">現v0の匿名hosted利用はIPベースの簡易rate limitのみ。個人配分/共有残高は後続runtimeです。</p>
       </div>
     </section>
 
@@ -112,38 +118,39 @@
 
     <section>
       <h2>6. 配布保護レベル</h2>
-      <p class="note">作者は4段階から選びます。Level 4が最も強い管理境界です。Level 2/3はthin v0では契約・設計のみで、暗号化やActivation実装済みとは表示しません。</p>
+      <p class="note">4段階の契約を選びます。現時点で実runtimeがあるのはLevel 4 Hostedのみ。Level 1〜3はportable runtime/ZIP自体がまだ未実装です。</p>
       <div class="level-list">
         <label class="level">
           <input type="radio" name="protectionLevel" value="LEVEL_1_LICENSE_ONLY">
-          <span><strong>Level 1 — ライセンスのみ</strong><small>ZIP/ファイルを渡す。再配布禁止は規約で定めるが、技術的コピー防止は保証しない。</small></span>
+          <span><strong>Level 1 — ライセンスのみ</strong><small>将来のportable型。規約のみで再配布を制限。技術的コピー防止なし。portable runtimeは未実装。</small></span>
         </label>
         <label class="level">
           <input type="radio" name="protectionLevel" value="LEVEL_2_BUYER_PASSPHRASE">
-          <span><strong>Level 2 — 暗号化 + 購入者Passphrase</strong><small>購入者側の秘密でカジュアルコピーを抑える設計。暗号化/Passphrase登録は未実装。</small></span>
+          <span><strong>Level 2 — 暗号化 + 購入者Passphrase</strong><small>将来のportable型。暗号化/Passphrase登録もportable runtimeも未実装。</small></span>
         </label>
         <label class="level">
           <input type="radio" name="protectionLevel" value="LEVEL_3_DUAL_CONTROL_ACTIVATION">
-          <span><strong>Level 3 — Passphrase + 販売者Activation</strong><small>購入者秘密 + WebAI Bridge/販売者側の署名Activation。席数管理も想定。実行基盤は未実装。</small></span>
+          <span><strong>Level 3 — Passphrase + 販売者Activation</strong><small>将来のportable型。購入者秘密 + 販売者/WebAI Bridge署名Activation。未実装。</small></span>
         </label>
         <label class="level">
           <input type="radio" name="protectionLevel" value="LEVEL_4_HOSTED_ONLY" checked>
-          <span><strong>Level 4 — Hosted Only</strong><small>Instructions/Knowledgeを渡さずURLで利用。秘密性・Entitlement・Safetyを最も強く管理できる。</small></span>
+          <span><strong>Level 4 — Hosted Only</strong><small>Instructions/Knowledgeをserver側に残す。現runtimeあり。ただし有料購入者Entitlementはまだ未実装。</small></span>
         </label>
       </div>
       <div id="portableFields" class="hidden">
-        <p class="danger-note"><strong>重要：</strong>Level 1〜3では購入者へPackage内容が渡ります。コピー・解析・改変を100%防止する保証はできません。</p>
-        <div id="level2Note" class="status-note hidden">Level 2は現在 <strong>CONTRACT_ONLY</strong>。実Package暗号化と購入者Passphrase登録は後続実装です。</div>
+        <p class="danger-note"><strong>重要：</strong>Level 1〜3は現在「将来どう守って渡すか」の契約意図だけです。現Studioは起動可能ZIPを生成しません。</p>
+        <div id="level2Note" class="status-note hidden">Level 2は <strong>CONTRACT_ONLY</strong>。暗号化/Passphrase登録は後続実装です。</div>
         <div id="level3Fields" class="hidden">
-          <div class="status-note">Level 3は現在 <strong>CONTRACT_ONLY</strong>。販売者パスワードそのものを購入者へ渡すのではなく、将来は販売者/WebAI Bridge側の署名Activationを使います。</div>
-          <label for="portableSeatLimit">利用席数</label><input id="portableSeatLimit" type="number" min="1" value="1">
+          <div class="status-note">Level 3は <strong>CONTRACT_ONLY</strong>。販売者パスワードを購入者へ渡す方式ではなく、将来は販売者/WebAI Bridge側の署名Activationを使います。</div>
+          <label for="portableSeatLimit">利用席数（将来契約）</label><input id="portableSeatLimit" type="number" min="1" value="1">
         </div>
-        <label class="check"><input type="checkbox" id="portableRiskAck"> <span>持ち出し版はコピー・解析・改変を完全には防げないことを理解し、この保護レベルを選びます。</span></label>
+        <label class="check"><input type="checkbox" id="portableRiskAck"> <span>portable版はコピー・解析・改変を完全には防げず、現時点では起動可能portable runtimeも未実装であることを理解します。</span></label>
       </div>
       <details>
         <summary>詳細上限</summary>
         <label for="maxInput">1メッセージ最大文字数</label><input id="maxInput" type="number" min="1" value="12000">
         <label for="maxHistory">保持する履歴メッセージ数</label><input id="maxHistory" type="number" min="0" value="12">
+        <label for="maxHistoryChars">履歴全体の最大文字数</label><input id="maxHistoryChars" type="number" min="0" value="48000">
         <label for="maxOutput">最大出力token</label><input id="maxOutput" type="number" min="1" value="2048">
       </details>
     </section>
@@ -154,11 +161,13 @@
   <section>
     <h2>検証結果</h2>
     <div id="status" class="note">まだ検証していません。</div>
+    <div id="readiness" class="readiness hidden"></div>
     <pre id="result"></pre>
     <div class="inline">
       <button class="secondary" id="downloadPackage" disabled>Package JSON</button>
       <button class="secondary" id="downloadInstructions" disabled>Instructions</button>
     </div>
+    <p class="note">Downloadできることは販売可能・本番実行可能を意味しません。readinessを確認してください。</p>
   </section>
 </main>
 <script>
@@ -170,6 +179,17 @@
     return document.querySelector('input[name="protectionLevel"]:checked')?.value || 'LEVEL_4_HOSTED_ONLY';
   }
 
+  function chargeBasisText() {
+    return {
+      FREE: '課金基準：無料',
+      ALLOWANCE_THEN_PAID: '課金基準：無料枠の後が未確定。販売前に買い切り/月額/1回ごとのどれかへ具体化が必要です。',
+      PAID: '課金基準：未確定。有料という意図だけなので販売前に具体化が必要です。',
+      BUY_ONCE: '課金基準：買い切り（1回の購入）',
+      SUBSCRIPTION: '課金基準：月額',
+      PER_USE: '課金基準：1回ごと',
+    }[$('accessMode').value] || '';
+  }
+
   function toggle() {
     const paid = $('accessMode').value !== 'FREE';
     const assisted = $('checkoutSetupMode').value === 'ASSISTED_SETUP';
@@ -178,6 +198,7 @@
     const level2 = level === 'LEVEL_2_BUYER_PASSPHRASE';
     const level3 = level === 'LEVEL_3_DUAL_CONTROL_ACTIVATION';
 
+    $('chargeBasisNote').textContent = chargeBasisText();
     $('knowledgeFields').classList.toggle('hidden', !$('knowledgeEnabled').checked);
     $('priceFields').classList.toggle('hidden', !paid);
     $('allowanceFields').classList.toggle('hidden', $('accessMode').value !== 'ALLOWANCE_THEN_PAID');
@@ -212,7 +233,6 @@
     const paid = $('accessMode').value !== 'FREE';
     const level = protectionLevel();
     const portable = level !== 'LEVEL_4_HOSTED_ONLY';
-
     return {
       display_name: $('name').value.trim(),
       slug: $('slug').value.trim(),
@@ -228,6 +248,7 @@
       included_runs: $('accessMode').value === 'ALLOWANCE_THEN_PAID' ? Number($('includedRuns').value || 0) : 0,
       checkout_setup_mode: $('checkoutSetupMode').value,
       stripe_payment_link_url: paid && $('checkoutSetupMode').value === 'SELF_SETUP' ? $('stripePaymentLink').value.trim() : '',
+      stripe_link_matches_configuration: paid && $('checkoutSetupMode').value === 'SELF_SETUP' ? $('stripeLinkMatches').checked : false,
       allowed_payer_modes: allowedPayers,
       default_payer_mode: $('defaultPayer').value || 'BYOK',
       platform_budget_id_env: $('budgetEnv').value.trim(),
@@ -235,10 +256,11 @@
       default_model: $('defaultModel').value,
       allowed_models: allowedModels,
       protection_level: level,
-      portable_seat_limit: Number($('portableSeatLimit').value || 1),
+      portable_seat_limit: level === 'LEVEL_3_DUAL_CONTROL_ACTIVATION' ? Number($('portableSeatLimit').value || 1) : 1,
       portable_copy_risk_acknowledged: portable ? $('portableRiskAck').checked : false,
       max_input_chars: Number($('maxInput').value),
       max_history_messages: Number($('maxHistory').value),
+      max_history_chars: Number($('maxHistoryChars').value),
       max_output_tokens: Number($('maxOutput').value)
     };
   }
@@ -252,46 +274,54 @@
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  function showReadiness(data) {
+    const r = data.readiness || {};
+    $('readiness').classList.remove('hidden');
+    const blockers = (r.blockers || []).length ? (r.blockers || []).join(', ') : 'なし';
+    $('readiness').innerHTML = `
+      <div><strong>設定:</strong> ${r.configuration || 'UNKNOWN'}</div>
+      <div><strong>Runtime:</strong> ${r.runtime || 'UNKNOWN'}</div>
+      <div><strong>販売:</strong> ${r.commercial || 'UNKNOWN'}</div>
+      <div><strong>Blockers:</strong> ${blockers}</div>`;
+  }
+
   $('studioForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     lastValid = null;
     $('downloadPackage').disabled = true;
     $('downloadInstructions').disabled = true;
+    $('readiness').classList.add('hidden');
     $('status').textContent = '検証中…';
     $('result').textContent = '';
     try {
       const draft = collect();
-      const res = await fetch('/api/studio/validate', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(draft)
-      });
+      const res = await fetch('/api/studio/validate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(draft)});
       const data = await res.json();
       if (!res.ok) {
         const detail = data.detail || data;
         const errors = detail.errors || [typeof detail === 'string' ? detail : JSON.stringify(detail)];
-        $('status').innerHTML = '<span class="bad">NG</span>';
+        $('status').innerHTML = `<span class="bad">CONFIG NG</span>`;
         $('result').textContent = errors.join('\n');
         return;
       }
       lastValid = {data, draft};
-      $('status').innerHTML = `<span class="ok">PASS</span>${data.warnings.length ? ` / <span class="warn">警告 ${data.warnings.length}</span>` : ''}`;
+      showReadiness(data);
+      $('status').innerHTML = `<span class="ok">CONFIG PASS</span>${data.warnings.length ? ` / <span class="warn">警告 ${data.warnings.length}</span>` : ''}`;
       $('result').textContent = (data.warnings.length ? `WARNINGS\n- ${data.warnings.join('\n- ')}\n\n` : '') + JSON.stringify(data.package, null, 2);
       $('downloadPackage').disabled = false;
       $('downloadInstructions').disabled = false;
     } catch (err) {
-      $('status').innerHTML = '<span class="bad">ERROR</span>';
+      $('status').innerHTML = `<span class="bad">ERROR</span>`;
       $('result').textContent = err.message || String(err);
     }
   });
 
   $('downloadPackage').addEventListener('click', () => lastValid && download(lastValid.data.exports.package_filename, JSON.stringify(lastValid.data.package, null, 2) + '\n', 'application/json'));
   $('downloadInstructions').addEventListener('click', () => lastValid && download(lastValid.data.exports.instructions_filename, lastValid.draft.instructions + '\n', 'text/markdown'));
+
   ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform'].forEach(id => $(id).addEventListener('change', toggle));
   document.querySelectorAll('input[name="protectionLevel"]').forEach(el => el.addEventListener('change', toggle));
-
-  toggle();
-  loadOptions().catch(err => { $('status').innerHTML = `<span class="bad">${err.message}</span>`; });
+  loadOptions().then(toggle).catch(err => { $('status').innerHTML = `<span class="bad">ERROR</span>`; $('result').textContent = err.message; });
 })();
 </script>
 </body>
