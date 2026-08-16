@@ -7,7 +7,30 @@ import subprocess
 from pathlib import Path
 
 from free_dogfood_host import cloudflared_hint, ensure_private_state_dir, ensure_venv, exact_clean_revision, port_is_available, validate_port
-from paid_dogfood_host import ensure_private_child_dir, ensure_private_secret, build_paid_env, prepare_package, run_json_preflight
+from paid_dogfood_host import ensure_private_child_dir, ensure_private_secret, build_paid_env, prepare_package
+
+
+def run_handoff_json_preflight(*, python: Path, runtime_dir: Path, env: dict[str, str]) -> dict:
+    completed = subprocess.run(
+        [str(python), str(runtime_dir / "deployment_preflight_handoff.py"), "--json"],
+        cwd=runtime_dir,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("browser-handoff deployment preflight did not return valid JSON") from exc
+    if completed.returncode != 0 or not result.get("ok"):
+        findings = ", ".join(item.get("code", "UNKNOWN") for item in result.get("findings", []))
+        raise RuntimeError(f"browser-handoff deployment preflight failed: {findings or 'UNKNOWN'}")
+    if result.get("validated_route_surface") != "commercial_handoff:app":
+        raise RuntimeError("browser-handoff deployment preflight did not validate the actual route surface")
+    if result.get("active_packages") != 1 or result.get("active_paid_packages") != 1:
+        raise RuntimeError("browser-handoff dogfood requires exactly one active package and one active paid package")
+    return result
 
 
 def main() -> int:
@@ -53,7 +76,7 @@ def main() -> int:
         )
         env["WEB_AI_ROUTE_SURFACE"] = "commercial_handoff:app"
         env["WEB_AI_HANDOFF_DB"] = str((state_dir / "handoff.sqlite3").resolve())
-        preflight = run_json_preflight(python=python, runtime_dir=runtime_dir, env=env)
+        preflight = run_handoff_json_preflight(python=python, runtime_dir=runtime_dir, env=env)
         hint = cloudflared_hint(port)
     except (ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(json.dumps({"status": "FAIL", "error": str(exc), "secrets_in_output": False}, ensure_ascii=False, indent=2))
@@ -68,6 +91,7 @@ def main() -> int:
         "package_reused": package["reused"],
         "active_packages": preflight["active_packages"],
         "active_paid_packages": preflight["active_paid_packages"],
+        "validated_route_surface": preflight["validated_route_surface"],
         "stripe_checkout_verification_configured": bool(env.get("WEB_AI_STRIPE_SECRET_KEY")),
         "handoff_ttl_seconds": 600,
         "port": port,
