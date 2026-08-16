@@ -55,7 +55,7 @@ class UrllibRequester:
         except urllib.error.HTTPError as exc:
             payload = exc.read(MAX_RESPONSE_BYTES + 1)
             status = int(exc.code)
-            response_headers = {key.lower(): value for key, value in exc.headers.items()}
+            response_headers = {key.lower(): value for key, value in (exc.headers.items() if exc.headers else [])}
         if len(payload) > MAX_RESPONSE_BYTES:
             raise RuntimeError("Response exceeded acceptance body limit")
         return Response(status=status, headers=response_headers, body=payload)
@@ -65,6 +65,10 @@ def normalize_base_url(value: str, *, allow_local_http: bool = False) -> str:
     parsed = urlparse(value.strip())
     if parsed.query or parsed.fragment or parsed.params:
         raise ValueError("base URL must not contain params, query, or fragment")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("base URL contains an invalid port") from exc
     host = (parsed.hostname or "").lower()
     local = host in {"localhost", "127.0.0.1", "::1"}
     if parsed.scheme != "https":
@@ -111,6 +115,27 @@ def _require_paid_page_headers(response: Response) -> None:
             raise RuntimeError(f"paid buyer page CSP missing: {required}")
 
 
+def _require_paid_hosted_contract(config: dict, slug: str) -> dict:
+    if config.get("slug") != slug:
+        raise RuntimeError("authorized config returned the wrong package slug")
+    if config.get("status") != "active":
+        raise RuntimeError("live paid package must report status=active")
+
+    access = config.get("access") or {}
+    if access.get("mode") not in {"BUY_ONCE", "SUBSCRIPTION"}:
+        raise RuntimeError("live acceptance only supports BUY_ONCE/SUBSCRIPTION paid packages")
+    if access.get("commercial_enforcement") != "ENTITLEMENT_ENFORCED":
+        raise RuntimeError("live paid package must report ENTITLEMENT_ENFORCED")
+
+    delivery = config.get("delivery") or {}
+    if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
+        raise RuntimeError("live paid package must be current Hosted-only runtime")
+
+    if config.get("allowed_payer_modes") != ["BYOK"] or config.get("default_payer_mode") != "BYOK":
+        raise RuntimeError("live paid v0 package must be BYOK-only")
+    return access
+
+
 def run_acceptance(
     requester,
     *,
@@ -154,12 +179,14 @@ def run_acceptance(
     )
     _require_status(authorized, 200, "authorized paid config")
     config = authorized.json()
-    if config.get("slug") != slug:
-        raise RuntimeError("authorized config returned the wrong package slug")
+    access = _require_paid_hosted_contract(config, slug)
     evidence.append({
-        "gate": "buyer_entitlement", "status": "PASS",
+        "gate": "buyer_entitlement_contract", "status": "PASS",
         "display_name": config.get("display_name"),
-        "access_mode": (config.get("access") or {}).get("mode"),
+        "access_mode": access.get("mode"),
+        "commercial_enforcement": access.get("commercial_enforcement"),
+        "delivery_mode": (config.get("delivery") or {}).get("mode"),
+        "payer_mode": config.get("default_payer_mode"),
     })
 
     provider_evidence = {"gate": "live_provider", "status": "SKIPPED"}
