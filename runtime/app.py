@@ -15,7 +15,7 @@ from cost_router import BudgetLedger, PricingRegistry, cost_micros
 from studio import StudioDraft, StudioValidationError, build_package, validate_package_document
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = Path(os.getenv("WEB_AI_CONFIG_DIR", BASE_DIR / "apps"))
+CONFIG_DIR = Path(os.getenv("WEB_AI_CONFIG_DIR", BASE_DIR / "apps")).resolve()
 STATIC_DIR = BASE_DIR / "static"
 STUDIO_DIR = BASE_DIR.parent / "creator-studio"
 PACKAGE_SCHEMA_FILE = BASE_DIR.parent / "package-schema" / "package.schema.json"
@@ -43,7 +43,7 @@ class ChatRequest(BaseModel):
 
 class AppRegistry:
     def __init__(self, config_dir: Path):
-        self.config_dir = config_dir
+        self.config_dir = config_dir.resolve()
         self.apps: dict[str, dict] = {}
         self.reload()
 
@@ -52,8 +52,10 @@ class AppRegistry:
         if not self.config_dir.exists():
             self.apps = apps
             return
-        instructions_root = (BASE_DIR / "apps").resolve()
+        instructions_root = self.config_dir.resolve()
         for path in sorted(self.config_dir.glob("*.json")):
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"package config must be a regular non-symlink file: {path}")
             data = json.loads(path.read_text(encoding="utf-8"))
             schema_errors = validate_package_document(data, schema_path=PACKAGE_SCHEMA_FILE)
             if schema_errors:
@@ -66,11 +68,14 @@ class AppRegistry:
             expected_instructions_file = f"apps/{slug}.instructions.md"
             if instructions_file != expected_instructions_file:
                 raise ValueError(f"non-canonical instructions_file for {slug}: {instructions_file}")
-            instruction_path = (BASE_DIR / instructions_file).resolve()
+            # `instructions_file` is the portable logical package path. At runtime,
+            # WEB_AI_CONFIG_DIR is the deployed `apps` authority root, so the file
+            # must resolve from that root rather than from a hard-coded repository path.
+            instruction_path = (instructions_root / f"{slug}.instructions.md").resolve()
             if instruction_path.parent != instructions_root:
-                raise ValueError(f"instructions path escapes app directory: {slug}")
-            if not instruction_path.exists() or not instruction_path.is_file():
-                raise ValueError(f"instructions file not found: {instruction_path}")
+                raise ValueError(f"instructions path escapes configured app directory: {slug}")
+            if instruction_path.is_symlink() or not instruction_path.exists() or not instruction_path.is_file():
+                raise ValueError(f"instructions file not found as regular non-symlink file: {instruction_path}")
 
             billing = data["billing"]
             allowed_payers = billing["allowed_payer_modes"]
@@ -125,29 +130,6 @@ def require_studio_enabled() -> None:
         raise HTTPException(status_code=404, detail="Creator Studio is disabled")
 
 
-def require_diagnostics_enabled() -> None:
-    if not diagnostics_enabled():
-        raise HTTPException(status_code=404, detail="Runtime diagnostics are disabled")
-
-
-def ensure_hosted_runnable(app_config: dict) -> None:
-    status = app_config.get("status")
-    if status not in RUNNABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="AI Package is not activated for runtime use")
-
-    delivery = app_config.get("delivery") or {}
-    if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
-        raise HTTPException(status_code=503, detail="Portable runtime execution is not implemented")
-
-    access = app_config.get("access") or {}
-    if access.get("mode") != "FREE":
-        raise HTTPException(status_code=503, detail="Paid hosted entitlement enforcement is not implemented")
-
-
-def hosted_instructions(app_config: dict) -> str:
-    return f"{SAFETY_KERNEL}\n\n# Creator package instructions\n\n{app_config['_instructions']}"
-
-
 def public_config(app_config: dict) -> dict:
     billing = app_config["billing"]
     return {
@@ -162,6 +144,7 @@ def public_config(app_config: dict) -> dict:
         "access": app_config.get("access", {}),
         "delivery": app_config.get("delivery", {}),
         "safety": app_config.get("safety", {}),
+        "readiness": app_config.get("readiness", {}),
     }
 
 
@@ -179,6 +162,18 @@ def resolve_model(app_config: dict) -> str:
     if model not in routing["allowed_models"]:
         raise HTTPException(status_code=503, detail="Model routing policy is invalid")
     return model
+
+
+def ensure_hosted_runnable(app_config: dict) -> None:
+    status = app_config.get("status")
+    if status not in RUNNABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="AI Package is not activated for runtime use")
+    delivery = app_config.get("delivery") or {}
+    if delivery.get("mode") != "HOSTED_ONLY" or delivery.get("runtime_implementation") != "AVAILABLE":
+        raise HTTPException(status_code=503, detail="Portable runtime execution is not implemented")
+    access = app_config.get("access") or {}
+    if access.get("mode") != "FREE" and access.get("commercial_enforcement") != "ENTITLEMENT_ENFORCED":
+        raise HTTPException(status_code=503, detail="Paid hosted entitlement enforcement is not implemented")
 
 
 def token_upper_bound(text: str) -> int:
@@ -203,6 +198,11 @@ def extract_usage(response) -> tuple[int | None, int | None]:
     return input_tokens, output_tokens
 
 
+def build_hosted_instructions(app_config: dict) -> str:
+    creator = app_config["_instructions"].strip()
+    return f"{SAFETY_KERNEL}\n\n--- Creator Instructions ---\n{creator}"
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "app_count": len(registry.apps), "pricing_version": pricing.version}
@@ -210,7 +210,8 @@ def health() -> dict:
 
 @app.get("/runtime")
 def runtime_identity() -> dict:
-    require_diagnostics_enabled()
+    if not diagnostics_enabled():
+        raise HTTPException(status_code=404, detail="Runtime diagnostics are disabled")
     return {
         "service_unit": os.getenv("WEB_AI_SERVICE_UNIT", "UNSET"),
         "working_directory": os.getenv("WEB_AI_WORKING_DIRECTORY", str(BASE_DIR)),
@@ -239,12 +240,7 @@ def creator_studio_options() -> dict:
         "pricing_version": pricing.version,
         "payer_modes": ["BYOK", "PLATFORM_CREDIT"],
         "access_modes": ["FREE", "ALLOWANCE_THEN_PAID", "PAID", "BUY_ONCE", "SUBSCRIPTION", "PER_USE"],
-        "protection_levels": [
-            "LEVEL_1_LICENSE_ONLY",
-            "LEVEL_2_BUYER_PASSPHRASE",
-            "LEVEL_3_DUAL_CONTROL_ACTIVATION",
-            "LEVEL_4_HOSTED_ONLY",
-        ],
+        "delivery_modes": ["HOSTED_ONLY", "PORTABLE_LICENSE", "HOSTED_AND_PORTABLE"],
         "commercial_enforcement": "NOT_IMPLEMENTED",
         "portable_runtime": "NOT_IMPLEMENTED",
         "persistence": "NONE",
@@ -293,14 +289,14 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
     usage_policy = app_config.get("usage", {})
     max_input_chars = int(usage_policy.get("max_input_chars", 12000))
     max_history_messages = int(usage_policy.get("max_history_messages", 12))
-    max_history_chars = int(usage_policy.get("max_history_chars", 48000))
+    max_history_chars = int(usage_policy.get("max_history_chars", max_input_chars * max_history_messages))
     max_output_tokens = int(usage_policy.get("max_output_tokens", 2048))
     if len(payload.message) > max_input_chars:
         raise HTTPException(status_code=413, detail="Message too large")
     if len(payload.history) > max_history_messages:
-        raise HTTPException(status_code=413, detail="Conversation history has too many messages")
+        raise HTTPException(status_code=413, detail="Conversation history too large")
     if sum(len(item.content) for item in payload.history) > max_history_chars:
-        raise HTTPException(status_code=413, detail="Conversation history is too large")
+        raise HTTPException(status_code=413, detail="Conversation history content too large")
 
     payer_mode = resolve_payer_mode(payload, app_config)
     model = resolve_model(app_config)
@@ -318,10 +314,9 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
 
     input_messages = [m.model_dump() for m in payload.history]
     input_messages.append({"role": "user", "content": payload.message})
-    instructions = hosted_instructions(app_config)
     kwargs: dict = {
         "model": model,
-        "instructions": instructions,
+        "instructions": build_hosted_instructions(app_config),
         "input": input_messages,
         "max_output_tokens": max_output_tokens,
         "store": False,
@@ -353,7 +348,7 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
         hard_limit_micros = int(platform_policy.get("hard_limit_usd_micros", 0))
         if hard_limit_micros <= 0:
             raise HTTPException(status_code=503, detail="Platform budget limit is invalid")
-        input_upper = request_input_token_upper_bound(payload, instructions, knowledge_reserve_tokens)
+        input_upper = request_input_token_upper_bound(payload, build_hosted_instructions(app_config), knowledge_reserve_tokens)
         reserved_micros = cost_micros(input_tokens=input_upper, output_tokens=max_output_tokens, price=price) + tool_reserve_micros
         if not ledger.reserve(budget_id, hard_limit_micros, reserved_micros):
             raise HTTPException(status_code=402, detail="Platform credit exhausted")
@@ -383,6 +378,11 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
                 budget_id=budget_id, reserved_micros=reserved_micros, package_id=app_config["slug"],
                 provider="openai", model=model, pricing_version=pricing.version, result="NO_TEXT"
             )
+        else:
+            ledger.record_byok(
+                package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version,
+                input_tokens=None, output_tokens=None, actual_cost_micros=None, result="NO_TEXT"
+            )
         raise HTTPException(status_code=502, detail="AI returned no text")
 
     input_tokens, output_tokens = extract_usage(response)
@@ -394,16 +394,14 @@ def chat(payload: ChatRequest, request: Request, byok_api_key: str | None = Head
 
     if payer_mode == "PLATFORM_CREDIT" and budget_id:
         charged = actual_cost if actual_cost is not None else reserved_micros
-        if actual_cost is None:
-            result = "SUCCESS_COST_UNOBSERVED"
-        elif actual_cost > reserved_micros:
+        result = "SUCCESS" if actual_cost is not None else "SUCCESS_COST_UNOBSERVED"
+        if actual_cost is not None and actual_cost > reserved_micros:
             result = "SUCCESS_RESERVATION_OVERRUN"
-        else:
-            result = "SUCCESS"
         ledger.settle_platform(
             budget_id=budget_id, reserved_micros=reserved_micros, charged_micros=charged,
             package_id=app_config["slug"], provider="openai", model=model, pricing_version=pricing.version,
-            input_tokens=input_tokens, output_tokens=output_tokens, actual_cost_micros=actual_cost, result=result
+            input_tokens=input_tokens, output_tokens=output_tokens, actual_cost_micros=actual_cost,
+            result=result,
         )
     else:
         ledger.record_byok(
