@@ -59,7 +59,7 @@
     </section>
 
     <section>
-      <h2>3. 利用権</h2>
+      <h2>3. 利用権・販売</h2>
       <label for="accessMode">どう使わせる？</label>
       <select id="accessMode">
         <option value="FREE">無料</option>
@@ -69,9 +69,21 @@
         <option value="SUBSCRIPTION">月額</option>
         <option value="PER_USE">1回ごと</option>
       </select>
-      <div id="priceFields" class="hidden"><label for="accessPriceJpy">利用料（円）</label><input id="accessPriceJpy" type="number" min="1" step="1" value="500"></div>
+      <div id="priceFields" class="hidden">
+        <label for="accessPriceJpy">利用料（円）</label><input id="accessPriceJpy" type="number" min="1" step="1" value="500">
+        <label for="checkoutSetupMode">Stripeの設定</label>
+        <select id="checkoutSetupMode">
+          <option value="SELF_SETUP">自分でPayment Linkを作る（セルフ）</option>
+          <option value="ASSISTED_SETUP">Payment Link作成をサポートしてほしい</option>
+        </select>
+        <div id="selfCheckoutFields">
+          <label for="stripePaymentLink">Stripe Payment Link</label>
+          <input id="stripePaymentLink" type="url" inputmode="url" placeholder="https://buy.stripe.com/... または自分のStripe決済ドメイン">
+        </div>
+        <p id="assistedCheckoutNote" class="note hidden">サポートありを選んだ場合、リンク未作成でもドラフト検証できます。販売開始前にStripe商品・価格・Payment Link・支払後導線の作成を完了させます。</p>
+      </div>
       <div id="allowanceFields" class="hidden"><label for="includedRuns">無料回数</label><input id="includedRuns" type="number" min="1" value="10"></div>
-      <p class="note">ここはAIそのものの利用料。下の「推論代を誰が払う？」とは別です。有料設定は現段階では販売意図の記録で、決済・利用権 enforcement は後段です。</p>
+      <p class="note">ここはAIそのものの利用料。下の「推論代を誰が払う？」とは別です。thin v0のStripeリンクは外部決済で、支払済み権限の自動判定はまだ行いません。</p>
     </section>
 
     <section>
@@ -127,9 +139,12 @@
 
   function toggle() {
     const paid = $('accessMode').value !== 'FREE';
+    const assisted = $('checkoutSetupMode').value === 'ASSISTED_SETUP';
     $('knowledgeFields').classList.toggle('hidden', !$('knowledgeEnabled').checked);
     $('priceFields').classList.toggle('hidden', !paid);
     $('allowanceFields').classList.toggle('hidden', $('accessMode').value !== 'ALLOWANCE_THEN_PAID');
+    $('selfCheckoutFields').classList.toggle('hidden', !paid || assisted);
+    $('assistedCheckoutNote').classList.toggle('hidden', !paid || !assisted);
     $('platformFields').classList.toggle('hidden', !$('payerPlatform').checked);
     const payers = [];
     if ($('payerByok').checked) payers.push('BYOK');
@@ -161,6 +176,8 @@
       knowledge_platform_tool_reserve_usd: $('toolReserveUsd').value || '0',
       access_mode: $('accessMode').value, access_price_jpy: paid ? Number($('accessPriceJpy').value || 0) : 0,
       included_runs: $('accessMode').value === 'ALLOWANCE_THEN_PAID' ? Number($('includedRuns').value || 0) : 0,
+      checkout_setup_mode: $('checkoutSetupMode').value,
+      stripe_payment_link_url: paid && $('checkoutSetupMode').value === 'SELF_SETUP' ? $('stripePaymentLink').value.trim() : '',
       allowed_payer_modes: allowedPayers, default_payer_mode: $('defaultPayer').value || 'BYOK',
       platform_budget_id_env: $('budgetEnv').value.trim(), platform_hard_limit_usd: $('hardLimitUsd').value || '0',
       default_model: $('defaultModel').value, allowed_models: allowedModels,
@@ -200,7 +217,7 @@
 
   $('downloadPackage').addEventListener('click', () => lastValid && download(lastValid.data.exports.package_filename, JSON.stringify(lastValid.data.package, null, 2) + '\n', 'application/json'));
   $('downloadInstructions').addEventListener('click', () => lastValid && download(lastValid.data.exports.instructions_filename, lastValid.draft.instructions + '\n', 'text/markdown'));
-  ['knowledgeEnabled','accessMode','payerByok','payerPlatform'].forEach(id => $(id).addEventListener('change', toggle));
+  ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform'].forEach(id => $(id).addEventListener('change', toggle));
   toggle();
   loadOptions().catch(err => { $('status').innerHTML = `<span class="bad">${err.message}</span>`; });
 })();
