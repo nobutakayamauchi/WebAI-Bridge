@@ -14,21 +14,9 @@ from byok_sessions import ByokSessionStore
 from checkout_state import CheckoutStateStore
 from commercial_studio import adapt_manual_hosted_entitlement
 from entitlement_cookies import sign_entitlement_cookie, verify_entitlement_cookie
-from entitlements import (
-    EntitlementStore,
-    PAYMENT_ACTIVE,
-    PAYMENT_EXPIRED,
-    PAYMENT_MISSING,
-    PAYMENT_REVOKED,
-)
+from entitlements import EntitlementStore, PAYMENT_ACTIVE, PAYMENT_EXPIRED, PAYMENT_MISSING, PAYMENT_REVOKED
 from handoff_tickets import HandoffTicketStore
-from stripe_checkout import (
-    StripeCheckoutError,
-    retrieve_checkout_session,
-    retrieve_payment_link,
-    validate_paid_checkout_session,
-    validate_payment_link_binding,
-)
+from stripe_checkout import StripeCheckoutError, retrieve_checkout_session, retrieve_payment_link, validate_paid_checkout_session, validate_payment_link_binding
 from stripe_webhook import StripeWebhookError, verify_stripe_signature
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -193,7 +181,7 @@ def ensure_payment_entitlement(*, verified: dict) -> str:
 
 
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.7.0-stripe-webhook-fulfillment")
+app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.7.1-stripe-webhook-fulfillment")
 
 
 @app.get("/health")
@@ -261,6 +249,10 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
         validate_payment_link_binding(payment_link=payment_link, app_config=app_config)
     except StripeCheckoutError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    lifecycle = entitlements.payment_state(package_id=verified["package_id"], payment_ref=verified["payment_ref"])
+    if lifecycle in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
+        checkout_state.mark_event_processed(event_id=event_id, event_type=event_type)
+        return {"received": True, "ignored_terminal": True}
     ensure_payment_entitlement(verified=verified)
     checkout_state.mark_event_processed(event_id=event_id, event_type=event_type)
     return {"received": True, "fulfilled": True, "package_id": slug}
@@ -305,11 +297,11 @@ def checkout_handoff(slug: str, ticket: str, request: Request):
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
     activate_url = f"/checkout/activate/{quote(slug, safe='')}?ticket={quote(ticket, safe='')}"
-    body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}}main{{max-width:720px;margin:auto;padding:40px 28px}}h1{{font-size:32px}}p{{font-size:18px;line-height:1.65;color:#555}}.card{{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}}a{{display:block;background:#111;color:#fff;text-decoration:none;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}}small{{display:block;margin-top:20px;color:#777;line-height:1.5}}</style></head><body><main><h1>購入確認が完了しました</h1><div class="card"><p><strong>Safariでこの画面を開いてから</strong>、下のボタンを押してください。</p><p>アプリ内ブラウザの場合は、Safariアイコン／「Safariで開く」を使ってこの画面をSafariへ移してください。</p><a href="{html.escape(activate_url, quote=True)}">この端末でAIを使う</a><small>この受け渡しリンクは約10分・1回だけ有効です。購入者コードを入力する必要はありません。</small></div></main></body></html>"""
+    body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}}main{{max-width:720px;margin:auto;padding:40px 28px}}h1{{font-size:32px}}p{{font-size:18px;line-height:1.65;color:#555}}.card{{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}}form{{margin:0}}button{{display:block;width:100%;border:0;background:#111;color:#fff;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}}small{{display:block;margin-top:20px;color:#777;line-height:1.5}}</style></head><body><main><h1>購入確認が完了しました</h1><div class="card"><p><strong>Safariでこの画面を開いてから</strong>、下のボタンを押してください。</p><p>アプリ内ブラウザの場合は、Safariアイコン／「Safariで開く」を使ってこの画面をSafariへ移してください。</p><form method="post" action="{html.escape(activate_url, quote=True)}"><button type="submit">この端末でAIを使う</button></form><small>この受け渡しリンクは約10分・1回だけ有効です。購入者コードを入力する必要はありません。</small></div></main></body></html>"""
     return secure_handoff_html(body)
 
 
-@app.get("/checkout/activate/{slug}")
+@app.post("/checkout/activate/{slug}")
 def checkout_activate(slug: str, ticket: str, request: Request):
     require_secure_transport(request)
     payment_ref = handoffs.consume(package_id=slug, ticket=ticket)
