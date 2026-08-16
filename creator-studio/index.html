@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>WebAI Bridge Creator Studio</title>
   <style>
-    :root { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#111; background:#f5f6f7; }
+    :root { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#111; background:#f5f6f7; }
     * { box-sizing:border-box; }
     body { margin:0; }
     main { width:min(760px,100%); margin:0 auto; min-height:100dvh; background:#fff; padding:18px 16px calc(32px + env(safe-area-inset-bottom)); }
@@ -29,6 +29,12 @@
     .bad { color:#b00020; }
     .warn { color:#8a5a00; }
     .danger-note { color:#8a2400; background:#fff4ef; border-radius:10px; padding:10px; font-size:13px; line-height:1.5; }
+    .level-list { display:grid; gap:9px; }
+    .level { display:flex; gap:10px; align-items:flex-start; border:1px solid #ddd; border-radius:12px; padding:11px; margin:0; font-weight:500; cursor:pointer; }
+    .level input { width:auto; margin:3px 0 0; }
+    .level strong { display:block; margin-bottom:3px; }
+    .level small { color:#666; line-height:1.4; display:block; }
+    .status-note { background:#f6f7f8; border-radius:10px; padding:10px; font-size:13px; line-height:1.5; margin-top:10px; }
     details { margin-top:10px; }
     summary { font-weight:700; cursor:pointer; }
   </style>
@@ -105,25 +111,34 @@
     </section>
 
     <section>
-      <h2>6. 配布・コピー保護</h2>
-      <label for="deliveryMode">配布方法</label>
-      <select id="deliveryMode">
-        <option value="HOSTED_ONLY">URLのみ（推奨：秘密を守りたい）</option>
-        <option value="PORTABLE_LICENSE">持ち出し可</option>
-        <option value="HOSTED_AND_PORTABLE">URL + 持ち出し可</option>
-      </select>
+      <h2>6. 配布保護レベル</h2>
+      <p class="note">作者は4段階から選びます。Level 4が最も強い管理境界です。Level 2/3はthin v0では契約・設計のみで、暗号化やActivation実装済みとは表示しません。</p>
+      <div class="level-list">
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_1_LICENSE_ONLY">
+          <span><strong>Level 1 — ライセンスのみ</strong><small>ZIP/ファイルを渡す。再配布禁止は規約で定めるが、技術的コピー防止は保証しない。</small></span>
+        </label>
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_2_BUYER_PASSPHRASE">
+          <span><strong>Level 2 — 暗号化 + 購入者Passphrase</strong><small>購入者側の秘密でカジュアルコピーを抑える設計。暗号化/Passphrase登録は未実装。</small></span>
+        </label>
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_3_DUAL_CONTROL_ACTIVATION">
+          <span><strong>Level 3 — Passphrase + 販売者Activation</strong><small>購入者秘密 + WebAI Bridge/販売者側の署名Activation。席数管理も想定。実行基盤は未実装。</small></span>
+        </label>
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_4_HOSTED_ONLY" checked>
+          <span><strong>Level 4 — Hosted Only</strong><small>Instructions/Knowledgeを渡さずURLで利用。秘密性・Entitlement・Safetyを最も強く管理できる。</small></span>
+        </label>
+      </div>
       <div id="portableFields" class="hidden">
-        <p class="danger-note"><strong>重要：</strong>ZIPやファイルを購入者へ渡した後、その内容を技術的に100%コピー不能にはできません。秘密性や強制Safetyが必要ならURLのみを選んでください。</p>
-        <label for="portableProtection">持ち出し版の保護</label>
-        <select id="portableProtection">
-          <option value="LICENSE_ONLY">ライセンスのみ（軽い・技術的コピー防止なし）</option>
-          <option value="ACTIVATION_REQUIRED">購入者Activation必須（将来実装）</option>
-        </select>
-        <div id="activationFields" class="hidden">
+        <p class="danger-note"><strong>重要：</strong>Level 1〜3では購入者へPackage内容が渡ります。コピー・解析・改変を100%防止する保証はできません。</p>
+        <div id="level2Note" class="status-note hidden">Level 2は現在 <strong>CONTRACT_ONLY</strong>。実Package暗号化と購入者Passphrase登録は後続実装です。</div>
+        <div id="level3Fields" class="hidden">
+          <div class="status-note">Level 3は現在 <strong>CONTRACT_ONLY</strong>。販売者パスワードそのものを購入者へ渡すのではなく、将来は販売者/WebAI Bridge側の署名Activationを使います。</div>
           <label for="portableSeatLimit">利用席数</label><input id="portableSeatLimit" type="number" min="1" value="1">
-          <p class="note">Activation/Entitlementサーバーはthin v0では未実装です。この設定は将来の契約意図として保存されます。</p>
         </div>
-        <label class="check"><input type="checkbox" id="portableRiskAck"> <span>持ち出し版はコピー・解析・改変を完全には防げないことを理解し、この配布方法を選びます。</span></label>
+        <label class="check"><input type="checkbox" id="portableRiskAck"> <span>持ち出し版はコピー・解析・改変を完全には防げないことを理解し、この保護レベルを選びます。</span></label>
       </div>
       <details>
         <summary>詳細上限</summary>
@@ -151,11 +166,18 @@
   const $ = (id) => document.getElementById(id);
   let lastValid = null;
 
+  function protectionLevel() {
+    return document.querySelector('input[name="protectionLevel"]:checked')?.value || 'LEVEL_4_HOSTED_ONLY';
+  }
+
   function toggle() {
     const paid = $('accessMode').value !== 'FREE';
     const assisted = $('checkoutSetupMode').value === 'ASSISTED_SETUP';
-    const portable = $('deliveryMode').value !== 'HOSTED_ONLY';
-    const activated = portable && $('portableProtection').value === 'ACTIVATION_REQUIRED';
+    const level = protectionLevel();
+    const portable = level !== 'LEVEL_4_HOSTED_ONLY';
+    const level2 = level === 'LEVEL_2_BUYER_PASSPHRASE';
+    const level3 = level === 'LEVEL_3_DUAL_CONTROL_ACTIVATION';
+
     $('knowledgeFields').classList.toggle('hidden', !$('knowledgeEnabled').checked);
     $('priceFields').classList.toggle('hidden', !paid);
     $('allowanceFields').classList.toggle('hidden', $('accessMode').value !== 'ALLOWANCE_THEN_PAID');
@@ -163,7 +185,9 @@
     $('assistedCheckoutNote').classList.toggle('hidden', !paid || !assisted);
     $('platformFields').classList.toggle('hidden', !$('payerPlatform').checked);
     $('portableFields').classList.toggle('hidden', !portable);
-    $('activationFields').classList.toggle('hidden', !activated);
+    $('level2Note').classList.toggle('hidden', !level2);
+    $('level3Fields').classList.toggle('hidden', !level3);
+
     const payers = [];
     if ($('payerByok').checked) payers.push('BYOK');
     if ($('payerPlatform').checked) payers.push('PLATFORM_CREDIT');
@@ -186,60 +210,86 @@
     if ($('payerPlatform').checked) allowedPayers.push('PLATFORM_CREDIT');
     const allowedModels = [...document.querySelectorAll('.modelCheck:checked')].map(x => x.value);
     const paid = $('accessMode').value !== 'FREE';
-    const portable = $('deliveryMode').value !== 'HOSTED_ONLY';
+    const level = protectionLevel();
+    const portable = level !== 'LEVEL_4_HOSTED_ONLY';
+
     return {
-      display_name: $('name').value.trim(), slug: $('slug').value.trim(), description: $('description').value,
-      instructions: $('instructions').value, welcome: $('welcome').value,
-      knowledge_enabled: $('knowledgeEnabled').checked, knowledge_vector_store_env: $('vectorEnv').value.trim(),
+      display_name: $('name').value.trim(),
+      slug: $('slug').value.trim(),
+      description: $('description').value,
+      instructions: $('instructions').value,
+      welcome: $('welcome').value,
+      knowledge_enabled: $('knowledgeEnabled').checked,
+      knowledge_vector_store_env: $('vectorEnv').value.trim(),
       knowledge_reserve_tokens: Number($('knowledgeReserveTokens').value || 0),
       knowledge_platform_tool_reserve_usd: $('toolReserveUsd').value || '0',
-      access_mode: $('accessMode').value, access_price_jpy: paid ? Number($('accessPriceJpy').value || 0) : 0,
+      access_mode: $('accessMode').value,
+      access_price_jpy: paid ? Number($('accessPriceJpy').value || 0) : 0,
       included_runs: $('accessMode').value === 'ALLOWANCE_THEN_PAID' ? Number($('includedRuns').value || 0) : 0,
       checkout_setup_mode: $('checkoutSetupMode').value,
       stripe_payment_link_url: paid && $('checkoutSetupMode').value === 'SELF_SETUP' ? $('stripePaymentLink').value.trim() : '',
-      allowed_payer_modes: allowedPayers, default_payer_mode: $('defaultPayer').value || 'BYOK',
-      platform_budget_id_env: $('budgetEnv').value.trim(), platform_hard_limit_usd: $('hardLimitUsd').value || '0',
-      default_model: $('defaultModel').value, allowed_models: allowedModels,
-      delivery_mode: $('deliveryMode').value,
-      portable_protection: $('portableProtection').value,
+      allowed_payer_modes: allowedPayers,
+      default_payer_mode: $('defaultPayer').value || 'BYOK',
+      platform_budget_id_env: $('budgetEnv').value.trim(),
+      platform_hard_limit_usd: $('hardLimitUsd').value || '0',
+      default_model: $('defaultModel').value,
+      allowed_models: allowedModels,
+      protection_level: level,
       portable_seat_limit: Number($('portableSeatLimit').value || 1),
       portable_copy_risk_acknowledged: portable ? $('portableRiskAck').checked : false,
-      max_input_chars: Number($('maxInput').value), max_history_messages: Number($('maxHistory').value), max_output_tokens: Number($('maxOutput').value)
+      max_input_chars: Number($('maxInput').value),
+      max_history_messages: Number($('maxHistory').value),
+      max_output_tokens: Number($('maxOutput').value)
     };
   }
 
   function download(filename, text, type='text/plain') {
     const url = URL.createObjectURL(new Blob([text], {type}));
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   $('studioForm').addEventListener('submit', async (e) => {
-    e.preventDefault(); lastValid = null; $('downloadPackage').disabled = true; $('downloadInstructions').disabled = true;
-    $('status').textContent = '検証中…'; $('result').textContent = '';
+    e.preventDefault();
+    lastValid = null;
+    $('downloadPackage').disabled = true;
+    $('downloadInstructions').disabled = true;
+    $('status').textContent = '検証中…';
+    $('result').textContent = '';
     try {
       const draft = collect();
-      const res = await fetch('/api/studio/validate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(draft)});
+      const res = await fetch('/api/studio/validate', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(draft)
+      });
       const data = await res.json();
       if (!res.ok) {
         const detail = data.detail || data;
         const errors = detail.errors || [typeof detail === 'string' ? detail : JSON.stringify(detail)];
-        $('status').innerHTML = `<span class="bad">NG</span>`;
+        $('status').innerHTML = '<span class="bad">NG</span>';
         $('result').textContent = errors.join('\n');
         return;
       }
       lastValid = {data, draft};
       $('status').innerHTML = `<span class="ok">PASS</span>${data.warnings.length ? ` / <span class="warn">警告 ${data.warnings.length}</span>` : ''}`;
       $('result').textContent = (data.warnings.length ? `WARNINGS\n- ${data.warnings.join('\n- ')}\n\n` : '') + JSON.stringify(data.package, null, 2);
-      $('downloadPackage').disabled = false; $('downloadInstructions').disabled = false;
+      $('downloadPackage').disabled = false;
+      $('downloadInstructions').disabled = false;
     } catch (err) {
-      $('status').innerHTML = `<span class="bad">ERROR</span>`; $('result').textContent = err.message || String(err);
+      $('status').innerHTML = '<span class="bad">ERROR</span>';
+      $('result').textContent = err.message || String(err);
     }
   });
 
   $('downloadPackage').addEventListener('click', () => lastValid && download(lastValid.data.exports.package_filename, JSON.stringify(lastValid.data.package, null, 2) + '\n', 'application/json'));
   $('downloadInstructions').addEventListener('click', () => lastValid && download(lastValid.data.exports.instructions_filename, lastValid.draft.instructions + '\n', 'text/markdown'));
-  ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform','deliveryMode','portableProtection'].forEach(id => $(id).addEventListener('change', toggle));
+  ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform'].forEach(id => $(id).addEventListener('change', toggle));
+  document.querySelectorAll('input[name="protectionLevel"]').forEach(el => el.addEventListener('change', toggle));
+
   toggle();
   loadOptions().catch(err => { $('status').innerHTML = `<span class="bad">${err.message}</span>`; });
 })();
