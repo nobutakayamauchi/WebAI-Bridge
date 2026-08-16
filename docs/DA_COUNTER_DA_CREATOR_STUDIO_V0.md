@@ -167,6 +167,22 @@ SERVER SECRET/ENV BINDING != PORTABLE RESOURCE
 
 All portable levels remain contract/design intent until a real portable artifact, provider credential path, Knowledge packaging/remote binding policy, and acceptance test exist.
 
+### F11 — access price lacks a machine-readable charge basis for generic paid modes
+
+DA:
+`BUY_ONCE`, `SUBSCRIPTION`, and `PER_USE` have an obvious price basis, but `PAID` and `ALLOWANCE_THEN_PAID` only carry a number. The same `500 JPY` could mean one-time, monthly, per-run, or another contract. A Stripe URL cannot repair an ambiguous package contract.
+
+Counter-DA:
+The generic modes are still useful as draft intent and should not be deleted. The package must state the ambiguity instead of silently guessing.
+
+Decision: `FIX CONTRACT NOW` with a derived `charge_basis`; generic paid modes remain manual-review/not-ready until a specific commercial basis exists.
+
+Invariant:
+
+```text
+PRICE AMOUNT WITHOUT CHARGE BASIS != COMPLETE COMMERCIAL CONTRACT
+```
+
 ## Findings that did not justify immediate implementation
 
 ### D1 — reservation IDs / idempotent settlement / crash leases
@@ -221,4 +237,4 @@ Decision: `KEEP CONTRACT-ONLY / BLOCK READY-TO-SELL CLAIM`.
 
 ## Merge gate
 
-The PR may return to `MERGE_READY` only after F1-F10 are either implemented and regression-tested or explicitly downgraded in product claims so the current runtime cannot contradict the contract.
+The PR may return to `MERGE_READY` only after F1-F11 are either implemented and regression-tested or explicitly downgraded in product claims so the current runtime cannot contradict the contract.
