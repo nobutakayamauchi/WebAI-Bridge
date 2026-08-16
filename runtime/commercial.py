@@ -17,7 +17,7 @@ SUPPORTED_MANUAL_ACCESS = {"BUY_ONCE", "SUBSCRIPTION"}
 
 
 def ensure_commercial_hosted_runnable(app_config: dict) -> None:
-    """Structural runtime gate used by the commercial wrapper.
+    """Structural runtime gate used by the commercial gateway.
 
     Free packages keep the existing behavior. Paid hosted v0 is deliberately narrow:
     buy-once or subscription, explicit entitlement enforcement, and BYOK only.
@@ -53,10 +53,35 @@ def require_entitlement(app_config: dict, token: str | None) -> None:
 
 
 # Core route functions resolve this global at call time. Replacing it lets the
-# commercial wrapper reuse the existing chat/provider/cost path without copying it.
+# commercial gateway reuse the existing provider/cost path without duplicating it.
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
 
 app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.3.0-manual-entitlement")
+
+
+@app.get("/health")
+def health() -> dict:
+    return core.health()
+
+
+@app.get("/runtime")
+def runtime_identity() -> dict:
+    return core.runtime_identity()
+
+
+@app.get("/studio")
+def creator_studio_page():
+    return core.creator_studio_page()
+
+
+@app.get("/api/studio/options")
+def creator_studio_options() -> dict:
+    return core.creator_studio_options()
+
+
+@app.post("/api/studio/validate")
+def creator_studio_validate(payload: core.StudioDraft, request: Request) -> dict:
+    return core.creator_studio_validate(payload=payload, request=request)
 
 
 @app.get("/apps/{slug}/public-config")
@@ -103,6 +128,7 @@ def paid_chat(
     return core.chat(payload=payload, request=request, byok_api_key=byok_api_key)
 
 
-# Everything else (health, opt-in diagnostics, Creator Studio, etc.) stays on the
-# already-tested core app. Specific routes above are registered before this mount.
-app.mount("/", core.app)
+# Intentionally no root mount of core.app here.
+# Every externally reachable route on the commercial entrypoint is explicit so a
+# routing-order/path-normalization mistake cannot silently fall through to a core
+# chat route that lacks buyer entitlement context.
