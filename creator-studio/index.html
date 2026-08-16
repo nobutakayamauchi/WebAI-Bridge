@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>WebAI Bridge Creator Studio</title>
+  <style>
+    :root { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#111; background:#f5f6f7; }
+    * { box-sizing:border-box; }
+    body { margin:0; }
+    main { width:min(760px,100%); margin:0 auto; min-height:100dvh; background:#fff; padding:18px 16px calc(32px + env(safe-area-inset-bottom)); }
+    h1 { margin:0 0 6px; font-size:24px; }
+    h2 { font-size:17px; margin:0 0 12px; }
+    p.note { color:#666; font-size:13px; line-height:1.5; margin:0 0 18px; }
+    section { border:1px solid #ddd; border-radius:16px; padding:14px; margin:12px 0; }
+    label { display:block; font-weight:700; font-size:14px; margin:10px 0 5px; }
+    input, textarea, select { width:100%; border:1px solid #bbb; border-radius:10px; padding:11px; font:inherit; background:#fff; }
+    textarea { min-height:120px; resize:vertical; }
+    .inline { display:flex; gap:12px; flex-wrap:wrap; }
+    .check { display:flex; align-items:flex-start; gap:7px; font-weight:500; margin:8px 0; line-height:1.4; }
+    .check input { width:auto; margin-top:3px; }
+    .hidden { display:none; }
+    button { border:0; border-radius:12px; padding:12px 14px; font:inherit; font-weight:700; cursor:pointer; }
+    .primary { background:#111; color:#fff; width:100%; }
+    .secondary { background:#eee; color:#111; flex:1; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    #result { white-space:pre-wrap; background:#f6f7f8; border-radius:12px; padding:12px; font-size:13px; overflow:auto; max-height:360px; }
+    .ok { color:#087f23; }
+    .bad { color:#b00020; }
+    .warn { color:#8a5a00; }
+    .danger-note { color:#8a2400; background:#fff4ef; border-radius:10px; padding:10px; font-size:13px; line-height:1.5; }
+    .level-list { display:grid; gap:9px; }
+    .level { display:flex; gap:10px; align-items:flex-start; border:1px solid #ddd; border-radius:12px; padding:11px; margin:0; font-weight:500; cursor:pointer; }
+    .level input { width:auto; margin:3px 0 0; }
+    .level strong { display:block; margin-bottom:3px; }
+    .level small { color:#666; line-height:1.4; display:block; }
+    .status-note { background:#f6f7f8; border-radius:10px; padding:10px; font-size:13px; line-height:1.5; margin-top:10px; }
+    .readiness { display:grid; gap:6px; margin:8px 0 12px; }
+    .readiness div { background:#f6f7f8; border-radius:9px; padding:9px 10px; font-size:13px; line-height:1.4; }
+    details { margin-top:10px; }
+    summary { font-weight:700; cursor:pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Creator Studio</h1>
+  <p class="note">thin v0：AI Packageをスマホで設定・検証・書き出します。設定PASSと「販売可能」「実行可能」は別判定です。</p>
+
+  <form id="studioForm">
+    <section>
+      <h2>1. AIの中身</h2>
+      <label for="name">AI名</label><input id="name" required placeholder="例：X投稿AI">
+      <label for="slug">URL用slug</label><input id="slug" required pattern="[a-z0-9][a-z0-9-]*" placeholder="x-post-ai">
+      <label for="description">説明</label><textarea id="description" placeholder="何をするAIか"></textarea>
+      <label for="instructions">Instructions</label><textarea id="instructions" required placeholder="このAIの役割、禁止事項、出力形式など"></textarea>
+      <label for="welcome">最初の案内</label><input id="welcome" placeholder="このAIに何でも聞いてください">
+    </section>
+
+    <section>
+      <h2>2. Knowledge</h2>
+      <label class="check"><input type="checkbox" id="knowledgeEnabled"> <span>Knowledgeを使う</span></label>
+      <div id="knowledgeFields" class="hidden">
+        <label for="vectorEnv">Vector Storeの環境変数名</label><input id="vectorEnv" placeholder="MY_AI_VECTOR_STORE_ID">
+        <label for="knowledgeReserveTokens">検索用token予約</label><input id="knowledgeReserveTokens" type="number" min="0" value="0">
+        <label for="toolReserveUsd">運営負担時のKnowledge追加費用予約（USD/回）</label><input id="toolReserveUsd" type="number" min="0" step="0.000001" value="0">
+        <p class="note">現在のKnowledgeはhosted server bindingです。ファイルupload/index作成とportable Knowledge梱包はまだoperator-assisted / 未実装です。</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 利用権・販売</h2>
+      <label for="accessMode">どう使わせる？</label>
+      <select id="accessMode">
+        <option value="FREE">無料</option>
+        <option value="ALLOWANCE_THEN_PAID">無料枠 → 有料（課金基準は後で確定）</option>
+        <option value="PAID">最初から有料（課金基準は後で確定）</option>
+        <option value="BUY_ONCE">買い切り</option>
+        <option value="SUBSCRIPTION">月額</option>
+        <option value="PER_USE">1回ごと</option>
+      </select>
+      <div id="chargeBasisNote" class="status-note"></div>
+      <div id="priceFields" class="hidden">
+        <label for="accessPriceJpy">利用料（円）</label><input id="accessPriceJpy" type="number" min="1" step="1" value="500">
+        <label for="checkoutSetupMode">Stripeの設定</label>
+        <select id="checkoutSetupMode">
+          <option value="SELF_SETUP">自分でPayment Linkを作る（セルフ）</option>
+          <option value="ASSISTED_SETUP">Payment Link作成をサポートしてほしい</option>
+        </select>
+        <div id="selfCheckoutFields">
+          <label for="stripePaymentLink">Stripe Payment Link</label>
+          <input id="stripePaymentLink" type="url" inputmode="url" placeholder="https://buy.stripe.com/... または自分のStripe決済ドメイン">
+          <label class="check"><input type="checkbox" id="stripeLinkMatches"> <span>このPayment Linkの商品・金額・通貨・課金方式が上の設定と一致していることを確認しました。</span></label>
+        </div>
+        <p id="assistedCheckoutNote" class="note hidden">サポートありを選んだ場合、リンク未作成でもドラフト検証できます。ただし販売Readyにはなりません。</p>
+      </div>
+      <div id="allowanceFields" class="hidden"><label for="includedRuns">無料回数</label><input id="includedRuns" type="number" min="1" value="10"></div>
+      <p class="note">ここはAIそのものの利用料。推論代とは別です。Payment Linkは支払い場所であり、購入者Entitlementの証明ではありません。</p>
+    </section>
+
+    <section>
+      <h2>4. 推論代を誰が払う？</h2>
+      <label class="check"><input type="checkbox" id="payerByok" checked> <span>利用者のAPIキー（BYOK）</span></label>
+      <p class="note">Hosted BYOKではキーを保存しませんが、リクエスト時にWebAI Bridgeサーバーを経由してAI providerへ送ります。「保存しない」と「サーバーから見えない」は同じではありません。</p>
+      <label class="check"><input type="checkbox" id="payerPlatform"> <span>運営/作者クレジット</span></label>
+      <label for="defaultPayer">標準の支払元</label><select id="defaultPayer"><option value="BYOK">BYOK</option></select>
+      <div id="platformFields" class="hidden">
+        <label for="budgetEnv">Budget IDの環境変数名</label><input id="budgetEnv" placeholder="MY_AI_BUDGET_ID">
+        <label for="hardLimitUsd">運営負担の絶対上限（USD）</label><input id="hardLimitUsd" type="number" min="0" step="0.01" value="1.00">
+        <p class="note">現v0の匿名hosted利用はIPベースの簡易rate limitのみ。個人配分/共有残高は後続runtimeです。</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>5. モデル</h2>
+      <div id="models">読み込み中…</div>
+      <label for="defaultModel">標準モデル</label><select id="defaultModel"></select>
+    </section>
+
+    <section>
+      <h2>6. 配布保護レベル</h2>
+      <p class="note">4段階の契約を選びます。現時点で実runtimeがあるのはLevel 4 Hostedのみ。Level 1〜3はportable runtime/ZIP自体がまだ未実装です。</p>
+      <div class="level-list">
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_1_LICENSE_ONLY">
+          <span><strong>Level 1 — ライセンスのみ</strong><small>将来のportable型。規約のみで再配布を制限。技術的コピー防止なし。portable runtimeは未実装。</small></span>
+        </label>
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_2_BUYER_PASSPHRASE">
+          <span><strong>Level 2 — 暗号化 + 購入者Passphrase</strong><small>将来のportable型。暗号化/Passphrase登録もportable runtimeも未実装。</small></span>
+        </label>
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_3_DUAL_CONTROL_ACTIVATION">
+          <span><strong>Level 3 — Passphrase + 販売者Activation</strong><small>将来のportable型。購入者秘密 + 販売者/WebAI Bridge署名Activation。未実装。</small></span>
+        </label>
+        <label class="level">
+          <input type="radio" name="protectionLevel" value="LEVEL_4_HOSTED_ONLY" checked>
+          <span><strong>Level 4 — Hosted Only</strong><small>Instructions/Knowledgeをserver側に残す。現runtimeあり。ただし有料購入者Entitlementはまだ未実装。</small></span>
+        </label>
+      </div>
+      <div id="portableFields" class="hidden">
+        <p class="danger-note"><strong>重要：</strong>Level 1〜3は現在「将来どう守って渡すか」の契約意図だけです。現Studioは起動可能ZIPを生成しません。</p>
+        <div id="level2Note" class="status-note hidden">Level 2は <strong>CONTRACT_ONLY</strong>。暗号化/Passphrase登録は後続実装です。</div>
+        <div id="level3Fields" class="hidden">
+          <div class="status-note">Level 3は <strong>CONTRACT_ONLY</strong>。販売者パスワードを購入者へ渡す方式ではなく、将来は販売者/WebAI Bridge側の署名Activationを使います。</div>
+          <label for="portableSeatLimit">利用席数（将来契約）</label><input id="portableSeatLimit" type="number" min="1" value="1">
+        </div>
+        <label class="check"><input type="checkbox" id="portableRiskAck"> <span>portable版はコピー・解析・改変を完全には防げず、現時点では起動可能portable runtimeも未実装であることを理解します。</span></label>
+      </div>
+      <details>
+        <summary>詳細上限</summary>
+        <label for="maxInput">1メッセージ最大文字数</label><input id="maxInput" type="number" min="1" value="12000">
+        <label for="maxHistory">保持する履歴メッセージ数</label><input id="maxHistory" type="number" min="0" value="12">
+        <label for="maxHistoryChars">履歴全体の最大文字数</label><input id="maxHistoryChars" type="number" min="0" value="48000">
+        <label for="maxOutput">最大出力token</label><input id="maxOutput" type="number" min="1" value="2048">
+      </details>
+    </section>
+
+    <button class="primary" type="submit" id="validate">設定を検証</button>
+  </form>
+
+  <section>
+    <h2>検証結果</h2>
+    <div id="status" class="note">まだ検証していません。</div>
+    <div id="readiness" class="readiness hidden"></div>
+    <pre id="result"></pre>
+    <div class="inline">
+      <button class="secondary" id="downloadPackage" disabled>Package JSON</button>
+      <button class="secondary" id="downloadInstructions" disabled>Instructions</button>
+    </div>
+    <p class="note">Downloadできることは販売可能・本番実行可能を意味しません。readinessを確認してください。</p>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let lastValid = null;
+
+  function protectionLevel() {
+    return document.querySelector('input[name="protectionLevel"]:checked')?.value || 'LEVEL_4_HOSTED_ONLY';
+  }
+
+  function chargeBasisText() {
+    return {
+      FREE: '課金基準：無料',
+      ALLOWANCE_THEN_PAID: '課金基準：無料枠の後が未確定。販売前に買い切り/月額/1回ごとのどれかへ具体化が必要です。',
+      PAID: '課金基準：未確定。有料という意図だけなので販売前に具体化が必要です。',
+      BUY_ONCE: '課金基準：買い切り（1回の購入）',
+      SUBSCRIPTION: '課金基準：月額',
+      PER_USE: '課金基準：1回ごと',
+    }[$('accessMode').value] || '';
+  }
+
+  function toggle() {
+    const paid = $('accessMode').value !== 'FREE';
+    const assisted = $('checkoutSetupMode').value === 'ASSISTED_SETUP';
+    const level = protectionLevel();
+    const portable = level !== 'LEVEL_4_HOSTED_ONLY';
+    const level2 = level === 'LEVEL_2_BUYER_PASSPHRASE';
+    const level3 = level === 'LEVEL_3_DUAL_CONTROL_ACTIVATION';
+
+    $('chargeBasisNote').textContent = chargeBasisText();
+    $('knowledgeFields').classList.toggle('hidden', !$('knowledgeEnabled').checked);
+    $('priceFields').classList.toggle('hidden', !paid);
+    $('allowanceFields').classList.toggle('hidden', $('accessMode').value !== 'ALLOWANCE_THEN_PAID');
+    $('selfCheckoutFields').classList.toggle('hidden', !paid || assisted);
+    $('assistedCheckoutNote').classList.toggle('hidden', !paid || !assisted);
+    $('platformFields').classList.toggle('hidden', !$('payerPlatform').checked);
+    $('portableFields').classList.toggle('hidden', !portable);
+    $('level2Note').classList.toggle('hidden', !level2);
+    $('level3Fields').classList.toggle('hidden', !level3);
+
+    const payers = [];
+    if ($('payerByok').checked) payers.push('BYOK');
+    if ($('payerPlatform').checked) payers.push('PLATFORM_CREDIT');
+    const current = $('defaultPayer').value;
+    $('defaultPayer').innerHTML = payers.map(p => `<option value="${p}">${p}</option>`).join('');
+    if (payers.includes(current)) $('defaultPayer').value = current;
+  }
+
+  async function loadOptions() {
+    const res = await fetch('/api/studio/options');
+    if (!res.ok) throw new Error('Creator Studioが有効ではありません');
+    const data = await res.json();
+    $('models').innerHTML = data.models.map((m, i) => `<label class="check"><input type="checkbox" class="modelCheck" value="${m}" ${i===0?'checked':''}> <span>${m}</span></label>`).join('');
+    $('defaultModel').innerHTML = data.models.map(m => `<option value="${m}">${m}</option>`).join('');
+  }
+
+  function collect() {
+    const allowedPayers = [];
+    if ($('payerByok').checked) allowedPayers.push('BYOK');
+    if ($('payerPlatform').checked) allowedPayers.push('PLATFORM_CREDIT');
+    const allowedModels = [...document.querySelectorAll('.modelCheck:checked')].map(x => x.value);
+    const paid = $('accessMode').value !== 'FREE';
+    const level = protectionLevel();
+    const portable = level !== 'LEVEL_4_HOSTED_ONLY';
+    return {
+      display_name: $('name').value.trim(),
+      slug: $('slug').value.trim(),
+      description: $('description').value,
+      instructions: $('instructions').value,
+      welcome: $('welcome').value,
+      knowledge_enabled: $('knowledgeEnabled').checked,
+      knowledge_vector_store_env: $('vectorEnv').value.trim(),
+      knowledge_reserve_tokens: Number($('knowledgeReserveTokens').value || 0),
+      knowledge_platform_tool_reserve_usd: $('toolReserveUsd').value || '0',
+      access_mode: $('accessMode').value,
+      access_price_jpy: paid ? Number($('accessPriceJpy').value || 0) : 0,
+      included_runs: $('accessMode').value === 'ALLOWANCE_THEN_PAID' ? Number($('includedRuns').value || 0) : 0,
+      checkout_setup_mode: $('checkoutSetupMode').value,
+      stripe_payment_link_url: paid && $('checkoutSetupMode').value === 'SELF_SETUP' ? $('stripePaymentLink').value.trim() : '',
+      stripe_link_matches_configuration: paid && $('checkoutSetupMode').value === 'SELF_SETUP' ? $('stripeLinkMatches').checked : false,
+      allowed_payer_modes: allowedPayers,
+      default_payer_mode: $('defaultPayer').value || 'BYOK',
+      platform_budget_id_env: $('budgetEnv').value.trim(),
+      platform_hard_limit_usd: $('hardLimitUsd').value || '0',
+      default_model: $('defaultModel').value,
+      allowed_models: allowedModels,
+      protection_level: level,
+      portable_seat_limit: level === 'LEVEL_3_DUAL_CONTROL_ACTIVATION' ? Number($('portableSeatLimit').value || 1) : 1,
+      portable_copy_risk_acknowledged: portable ? $('portableRiskAck').checked : false,
+      max_input_chars: Number($('maxInput').value),
+      max_history_messages: Number($('maxHistory').value),
+      max_history_chars: Number($('maxHistoryChars').value),
+      max_output_tokens: Number($('maxOutput').value)
+    };
+  }
+
+  function download(filename, text, type='text/plain') {
+    const url = URL.createObjectURL(new Blob([text], {type}));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function showReadiness(data) {
+    const r = data.readiness || {};
+    $('readiness').classList.remove('hidden');
+    const blockers = (r.blockers || []).length ? (r.blockers || []).join(', ') : 'なし';
+    $('readiness').innerHTML = `
+      <div><strong>設定:</strong> ${r.configuration || 'UNKNOWN'}</div>
+      <div><strong>Runtime:</strong> ${r.runtime || 'UNKNOWN'}</div>
+      <div><strong>販売:</strong> ${r.commercial || 'UNKNOWN'}</div>
+      <div><strong>Blockers:</strong> ${blockers}</div>`;
+  }
+
+  $('studioForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    lastValid = null;
+    $('downloadPackage').disabled = true;
+    $('downloadInstructions').disabled = true;
+    $('readiness').classList.add('hidden');
+    $('status').textContent = '検証中…';
+    $('result').textContent = '';
+    try {
+      const draft = collect();
+      const res = await fetch('/api/studio/validate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(draft)});
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = data.detail || data;
+        const errors = detail.errors || [typeof detail === 'string' ? detail : JSON.stringify(detail)];
+        $('status').innerHTML = `<span class="bad">CONFIG NG</span>`;
+        $('result').textContent = errors.join('\n');
+        return;
+      }
+      lastValid = {data, draft};
+      showReadiness(data);
+      $('status').innerHTML = `<span class="ok">CONFIG PASS</span>${data.warnings.length ? ` / <span class="warn">警告 ${data.warnings.length}</span>` : ''}`;
+      $('result').textContent = (data.warnings.length ? `WARNINGS\n- ${data.warnings.join('\n- ')}\n\n` : '') + JSON.stringify(data.package, null, 2);
+      $('downloadPackage').disabled = false;
+      $('downloadInstructions').disabled = false;
+    } catch (err) {
+      $('status').innerHTML = `<span class="bad">ERROR</span>`;
+      $('result').textContent = err.message || String(err);
+    }
+  });
+
+  $('downloadPackage').addEventListener('click', () => lastValid && download(lastValid.data.exports.package_filename, JSON.stringify(lastValid.data.package, null, 2) + '\n', 'application/json'));
+  $('downloadInstructions').addEventListener('click', () => lastValid && download(lastValid.data.exports.instructions_filename, lastValid.draft.instructions + '\n', 'text/markdown'));
+
+  ['knowledgeEnabled','accessMode','checkoutSetupMode','payerByok','payerPlatform'].forEach(id => $(id).addEventListener('change', toggle));
+  document.querySelectorAll('input[name="protectionLevel"]').forEach(el => el.addEventListener('change', toggle));
+  loadOptions().then(toggle).catch(err => { $('status').innerHTML = `<span class="bad">ERROR</span>`; $('result').textContent = err.message; });
+})();
+</script>
+</body>
+</html>

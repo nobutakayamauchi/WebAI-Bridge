@@ -48,8 +48,13 @@ def cost_micros(*, input_tokens: int, output_tokens: int, price: dict) -> int:
 class BudgetLedger:
     """Bounded persistent v0 budget + usage ledger.
 
-    Platform-credit reservation uses BEGIN IMMEDIATE so concurrent requests cannot
-    trivially spend the same remaining allowance.
+    Reservation prevents normal concurrent callers from authorizing the same remaining
+    budget twice. If observed provider cost exceeds the reservation, settlement records
+    the observed cost even when that makes spent exceed the hard limit. The provider
+    charge has already happened at that point; hiding the overrun would make the ledger
+    false. A spent value at/above the hard limit blocks later reservations.
+
+    Reservation identity/idempotent retry and crash leases remain a production gate.
     """
 
     def __init__(self, path: Path):
@@ -127,8 +132,8 @@ class BudgetLedger:
             return True
 
     def settle_platform(self, *, budget_id: str, reserved_micros: int, charged_micros: int, package_id: str, provider: str, model: str, pricing_version: str, input_tokens: int | None, output_tokens: int | None, actual_cost_micros: int | None, result: str) -> None:
-        if charged_micros < 0 or charged_micros > reserved_micros:
-            raise ValueError("charged cost must fit reservation")
+        if charged_micros < 0:
+            raise ValueError("charged cost must be non-negative")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT reserved_micros FROM budgets WHERE budget_id=?", (budget_id,)).fetchone()
@@ -139,7 +144,21 @@ class BudgetLedger:
                 "UPDATE budgets SET reserved_micros=reserved_micros-?, spent_micros=spent_micros+? WHERE budget_id=?",
                 (reserved_micros, charged_micros, budget_id),
             )
-            self._insert_event(conn, package_id=package_id, payer_mode="PLATFORM_CREDIT", budget_id=budget_id, provider=provider, model=model, pricing_version=pricing_version, input_tokens=input_tokens, output_tokens=output_tokens, reserved_cost_micros=reserved_micros, actual_cost_micros=actual_cost_micros, charged_cost_micros=charged_micros, result=result)
+            self._insert_event(
+                conn,
+                package_id=package_id,
+                payer_mode="PLATFORM_CREDIT",
+                budget_id=budget_id,
+                provider=provider,
+                model=model,
+                pricing_version=pricing_version,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reserved_cost_micros=reserved_micros,
+                actual_cost_micros=actual_cost_micros,
+                charged_cost_micros=charged_micros,
+                result=result,
+            )
             conn.execute("COMMIT")
 
     def release_failed(self, *, budget_id: str, reserved_micros: int, package_id: str, provider: str, model: str, pricing_version: str, result: str) -> None:

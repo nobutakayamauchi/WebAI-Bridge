@@ -21,18 +21,22 @@ NO PAYER RESOLUTION -> NO BUDGET AUTHORIZATION -> NO MODEL EXECUTION
 ## Repository structure
 
 ```text
-creator-studio/   Thin creator configuration surface (next active build)
-runtime/          Hosted Web AI runtime + mobile chat + ledger
+creator-studio/   Thin smartphone package configuration/export surface
+runtime/          Hosted Web AI runtime + mobile chat + ledger + Studio validator
 cost-router/      Cost/payer boundary documentation and extraction target
 package-schema/   Canonical AI Package contract
-docs/             Product, cost and distribution specifications
+docs/             Product, cost, distribution and /goal evidence
 ```
 
 ## Current status
 
 `DOGFOOD / NOT_PRODUCTION`
 
-The initial runtime has been extracted from the Limit Development dogfood episode. Local regression evidence at extraction time: **12 passed**. Live provider, mobile, deployment and commercial payment validation remain separate gates.
+The runtime has been extracted from the Limit Development dogfood episode. Creator Studio thin v0 is the current challenger: it removes hand-written package JSON by composing a mobile form with the existing runtime, canonical schema and pricing registry while remaining export-only.
+
+The Studio is disabled by default and does not write live runtime configuration. See `docs/GOAL_CREATOR_STUDIO_V0.md`.
+
+Live provider, mobile-device, deployment and commercial payment validation remain separate gates.
 
 ## Origin / evidence
 

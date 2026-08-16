@@ -13,12 +13,24 @@
   },
   "access": {
     "mode": "FREE",
+    "charge_basis": "FREE",
+    "currency": "JPY",
+    "price_amount_minor": 0,
     "included_runs": 0,
-    "commercial_enforcement": "NOT_IMPLEMENTED"
+    "commercial_enforcement": "NOT_IMPLEMENTED",
+    "checkout": {
+      "provider": "NONE",
+      "setup_mode": "NONE",
+      "payment_link_url": "",
+      "binding_verification": "NOT_REQUIRED",
+      "fulfillment": "NONE",
+      "entitlement_verification": "NOT_REQUIRED"
+    }
   },
   "billing": {
     "allowed_payer_modes": ["BYOK", "PLATFORM_CREDIT"],
     "default_payer_mode": "BYOK",
+    "byok_transport": "SERVER_PROXY_EPHEMERAL",
     "platform_credit": {
       "enabled": true,
       "budget_id_env": "MIGRATION_FIXTURE_BUDGET_ID",
@@ -31,7 +43,27 @@
     "allowed_models": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
   },
   "delivery": {
-    "mode": "HOSTED_ONLY"
+    "mode": "HOSTED_ONLY",
+    "protection_level": "LEVEL_4_HOSTED_ONLY",
+    "portable_protection": "NOT_APPLICABLE",
+    "buyer_passphrase_required": false,
+    "seller_activation_required": false,
+    "seat_limit": 0,
+    "protection_implementation": "AVAILABLE",
+    "runtime_implementation": "AVAILABLE",
+    "copy_protection_guarantee": "HOSTED_BOUNDARY",
+    "portable_copy_risk_acknowledged": false
+  },
+  "safety": {
+    "hosted_policy": "SERVER_INSTRUCTION_POLICY_V0",
+    "hosted_enforcement": "PROMPT_POLICY_PLUS_PROVIDER_BASELINE",
+    "portable_enforcement": "NOT_GUARANTEED"
+  },
+  "readiness": {
+    "configuration": "VALIDATED",
+    "runtime": "DOGFOOD_RUNNABLE",
+    "commercial": "NOT_APPLICABLE",
+    "blockers": []
   },
   "ui": {
     "welcome": "Migration Kitの最小動作確認用AIです。"
@@ -39,6 +71,7 @@
   "usage": {
     "max_input_chars": 12000,
     "max_history_messages": 12,
+    "max_history_chars": 48000,
     "max_output_tokens": 2048
   }
 }

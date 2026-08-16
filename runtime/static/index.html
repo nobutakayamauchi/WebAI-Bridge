@@ -11,7 +11,7 @@
     main { width: min(760px, 100%); min-height: 100dvh; margin: 0 auto; background: #fff; display: flex; flex-direction: column; }
     header { padding: 16px; border-bottom: 1px solid #ddd; }
     h1 { font-size: 20px; margin: 0 0 6px; }
-    #welcome, #billing-note { margin: 4px 0 0; font-size: 14px; color: #555; }
+    #welcome, #billing-note { margin: 4px 0 0; font-size: 14px; color: #555; line-height: 1.45; }
     #billing { padding: 10px 16px; border-bottom: 1px solid #eee; display: grid; gap: 8px; }
     #billing label { font-size: 14px; }
     #api-key { width: 100%; min-height: 42px; border: 1px solid #bbb; border-radius: 10px; padding: 9px 11px; font: inherit; }
@@ -32,7 +32,7 @@
   <header><h1 id="title">WebAI Bridge</h1><p id="welcome">読み込み中…</p></header>
   <section id="billing">
     <label>推論代の支払い元<select id="payer"></select></label>
-    <label id="api-key-wrap" hidden>OpenAI API Key（この画面では保存しません）<input id="api-key" type="password" autocomplete="off" spellcheck="false"></label>
+    <label id="api-key-wrap" hidden>OpenAI API Key（この画面/Runtimeでは永続保存しません）<input id="api-key" type="password" autocomplete="off" spellcheck="false"></label>
     <p id="billing-note"></p>
   </section>
   <section id="messages" aria-live="polite"></section>
@@ -44,10 +44,59 @@
   const title = document.getElementById('title'), welcome = document.getElementById('welcome'), messages = document.getElementById('messages'), form = document.getElementById('form'), input = document.getElementById('input'), send = document.getElementById('send'), payer = document.getElementById('payer'), apiKey = document.getElementById('api-key'), apiKeyWrap = document.getElementById('api-key-wrap'), billingNote = document.getElementById('billing-note');
   const history = [];
   function add(role, text) { const el = document.createElement('div'); el.className = `msg ${role}`; el.textContent = text; messages.appendChild(el); messages.scrollTop = messages.scrollHeight; }
-  function syncPayerUI() { const byok = payer.value === 'BYOK'; apiKeyWrap.hidden = !byok; billingNote.textContent = byok ? 'API利用料はあなたのAPIアカウント側に発生します。キーはこのページ内メモリだけで使います。' : 'このAIに設定された運営提供クレジットの上限内で実行します。'; }
-  async function loadConfig() { const res = await fetch(`/apps/${encodeURIComponent(slug)}/public-config`); if (!res.ok) throw new Error('設定を読み込めませんでした'); const cfg = await res.json(); title.textContent = cfg.display_name; welcome.textContent = cfg.welcome; payer.replaceChildren(); for (const mode of cfg.allowed_payer_modes) { const option = document.createElement('option'); option.value = mode; option.textContent = mode === 'BYOK' ? '自分のAPIキー（BYOK）' : '運営提供クレジット'; option.selected = mode === cfg.default_payer_mode; payer.appendChild(option); } syncPayerUI(); }
-  async function submitMessage(text) { const prior = history.slice(); add('user', text); input.value = ''; input.disabled = true; send.disabled = true; try { const headers = {'Content-Type': 'application/json'}; if (payer.value === 'BYOK') { const key = apiKey.value.trim(); if (!key) throw new Error('BYOKを使うにはAPIキーを入力してください'); headers['X-Provider-API-Key'] = key; } const res = await fetch('/api/chat', {method: 'POST', headers, body: JSON.stringify({slug, message: text, history: prior, payer_mode: payer.value})}); const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.detail || 'AIへの接続に失敗しました'); add('assistant', data.text); history.push({role: 'user', content: text}); history.push({role: 'assistant', content: data.text}); } catch (err) { add('system', err.message || 'エラーが発生しました'); } finally { input.disabled = false; send.disabled = false; input.focus(); } }
-  payer.addEventListener('change', syncPayerUI); form.addEventListener('submit', (event) => { event.preventDefault(); const text = input.value.trim(); if (text) submitMessage(text); }); loadConfig().catch(err => add('system', err.message));
+  function syncPayerUI() {
+    const byok = payer.value === 'BYOK';
+    apiKeyWrap.hidden = !byok;
+    billingNote.textContent = byok
+      ? 'API利用料はあなたのAPIアカウント側に発生します。キーは永続保存しませんが、このHosted版では各リクエスト時にWebAI Bridgeサーバーを経由してproviderへ送信されます。'
+      : 'このAIに設定された運営提供クレジットの上限内で実行します。';
+  }
+  async function loadConfig() {
+    const res = await fetch(`/apps/${encodeURIComponent(slug)}/public-config`);
+    if (!res.ok) throw new Error('設定を読み込めませんでした');
+    const cfg = await res.json();
+    title.textContent = cfg.display_name;
+    welcome.textContent = cfg.welcome;
+    payer.replaceChildren();
+    for (const mode of cfg.allowed_payer_modes) {
+      const option = document.createElement('option');
+      option.value = mode;
+      option.textContent = mode === 'BYOK' ? '自分のAPIキー（BYOK）' : '運営提供クレジット';
+      option.selected = mode === cfg.default_payer_mode;
+      payer.appendChild(option);
+    }
+    syncPayerUI();
+  }
+  async function submitMessage(text) {
+    const prior = history.slice();
+    add('user', text);
+    input.value = '';
+    input.disabled = true;
+    send.disabled = true;
+    try {
+      const headers = {'Content-Type': 'application/json'};
+      if (payer.value === 'BYOK') {
+        const key = apiKey.value.trim();
+        if (!key) throw new Error('BYOKを使うにはAPIキーを入力してください');
+        headers['X-Provider-API-Key'] = key;
+      }
+      const res = await fetch('/api/chat', {method: 'POST', headers, body: JSON.stringify({slug, message: text, history: prior, payer_mode: payer.value})});
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'AIへの接続に失敗しました');
+      add('assistant', data.text);
+      history.push({role: 'user', content: text});
+      history.push({role: 'assistant', content: data.text});
+    } catch (err) {
+      add('system', err.message || 'エラーが発生しました');
+    } finally {
+      input.disabled = false;
+      send.disabled = false;
+      input.focus();
+    }
+  }
+  payer.addEventListener('change', syncPayerUI);
+  form.addEventListener('submit', (event) => { event.preventDefault(); const text = input.value.trim(); if (text) submitMessage(text); });
+  loadConfig().catch(err => add('system', err.message));
 })();
 </script>
 </body>
