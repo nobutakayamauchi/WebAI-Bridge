@@ -129,7 +129,7 @@ def test_forget_removes_ram_authority_and_cookie(tmp_path, monkeypatch):
         "/api/chat",
         json={"slug": slug, "message": "hello", "history": [], "payer_mode": "BYOK"},
     )
-    assert result.status_code == 401
+    assert result.status_code == 402
 
 
 def test_session_creation_requires_https_in_public_mode(tmp_path, monkeypatch):
