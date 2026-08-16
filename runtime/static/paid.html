@@ -15,6 +15,9 @@
     #access, #billing { padding:12px 16px; border-bottom:1px solid #eee; display:grid; gap:8px; }
     input { width:100%; min-height:42px; border:1px solid #bbb; border-radius:10px; padding:9px 11px; font:inherit; }
     button { border:0; border-radius:12px; padding:11px 14px; font:inherit; font-weight:700; background:#111; color:#fff; }
+    button.secondary { background:#e9e9e9; color:#111; }
+    #byok-connect, #byok-status { display:grid; gap:8px; }
+    #byok-status { padding:10px; border:1px solid #ddd; border-radius:10px; }
     #messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
     .msg { max-width:88%; padding:11px 13px; border-radius:14px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
     .user { align-self:flex-end; background:#111; color:#fff; }
@@ -41,9 +44,17 @@
   </section>
 
   <section id="billing" hidden>
-    <strong>推論用 OpenAI API Key（BYOK）</strong>
-    <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
-    <p>推論代はあなたのAPIアカウント側に発生します。キーはこのページのメモリからリクエストごとにWebAI Bridgeサーバーへ送られ、providerへ中継されます。WebAI Bridgeは意図的に永続保存しません。</p>
+    <div id="byok-connect">
+      <strong>推論用 OpenAI API Key（BYOK）</strong>
+      <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+      <button id="connect-byok" type="button">APIキーを一時接続</button>
+      <p>APIキー本体は接続時だけHTTPSでWebAI Bridgeへ送信します。接続後、この入力欄から即時消去し、ブラウザにはHttpOnlyの一時セッションIDだけを保持します。</p>
+    </div>
+    <div id="byok-status" hidden>
+      <strong>✓ APIキーを一時接続済み</strong>
+      <p id="byok-expiry"></p>
+      <button id="forget-byok" class="secondary" type="button">キーを忘れる</button>
+    </div>
   </section>
 
   <section id="messages" aria-live="polite"></section>
@@ -59,6 +70,7 @@
   const storageKey = `webai-entitlement:${slug}`;
   const conversationHistory = [];
   let unlocked = false;
+  let byokConnected = false;
 
   function add(role, text) {
     const el = document.createElement('div');
@@ -84,12 +96,64 @@
     return token ? {'X-WebAI-Entitlement': token} : {};
   }
 
+  function setByokState(connected, expiresIn = 0) {
+    byokConnected = Boolean(connected);
+    $('api-key').value = '';
+    $('byok-connect').hidden = byokConnected;
+    $('byok-status').hidden = !byokConnected;
+    $('byok-expiry').textContent = byokConnected ? `サーバーRAM上の一時セッション。約${Math.max(1, Math.ceil(expiresIn / 60))}分以内に自動削除されます。` : '';
+  }
+
+  async function refreshByokStatus() {
+    try {
+      const res = await fetch(`/api/byok/session/${encodeURIComponent(slug)}`, {headers:entitlementHeaders(), cache:'no-store'});
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'BYOK接続状態を確認できませんでした');
+      setByokState(Boolean(data.connected), Number(data.expires_in_seconds || 0));
+    } catch (err) {
+      setByokState(false, 0);
+      add('system', err.message || 'BYOK接続状態を確認できませんでした');
+    }
+  }
+
+  async function connectByok() {
+    let key = $('api-key').value.trim();
+    if (!key) { add('system', 'OpenAI API Keyを入力してください。'); return; }
+    $('connect-byok').disabled = true;
+    let body = JSON.stringify({slug, api_key:key});
+    $('api-key').value = '';
+    key = '';
+    try {
+      const res = await fetch('/api/byok/session', {method:'POST', headers:{'Content-Type':'application/json', ...entitlementHeaders()}, body, cache:'no-store'});
+      body = '';
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'APIキーを一時接続できませんでした');
+      setByokState(true, Number(data.expires_in_seconds || 0));
+    } catch (err) {
+      body = '';
+      setByokState(false, 0);
+      add('system', err.message || 'APIキーを一時接続できませんでした');
+    } finally {
+      $('connect-byok').disabled = false;
+    }
+  }
+
+  async function forgetByok() {
+    $('forget-byok').disabled = true;
+    try {
+      await fetch(`/api/byok/session/${encodeURIComponent(slug)}`, {method:'DELETE', headers:entitlementHeaders(), cache:'no-store'});
+    } finally {
+      setByokState(false, 0);
+      $('forget-byok').disabled = false;
+    }
+  }
+
   async function unlock() {
     const token = $('access-token').value.trim();
     if (!token) { add('system', '購入者アクセスコードを入力してください。'); return; }
     $('unlock').disabled = true;
     try {
-      const res = await fetch(`/apps/${encodeURIComponent(slug)}/public-config`, {headers: entitlementHeaders()});
+      const res = await fetch(`/apps/${encodeURIComponent(slug)}/public-config`, {headers: entitlementHeaders(), cache:'no-store'});
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || 'アクセスコードを確認できませんでした');
       sessionStorage.setItem(storageKey, token);
@@ -100,6 +164,7 @@
       $('input').disabled = false;
       $('send').disabled = false;
       unlocked = true;
+      await refreshByokStatus();
       $('input').focus();
     } catch (err) {
       sessionStorage.removeItem(storageKey);
@@ -111,26 +176,23 @@
 
   async function submitMessage(text) {
     if (!unlocked) return;
-    const apiKey = $('api-key').value.trim();
-    if (!apiKey) { add('system', 'BYOKを使うにはOpenAI API Keyを入力してください。'); return; }
+    if (!byokConnected) { add('system', '先にOpenAI API Keyを一時接続してください。'); return; }
     const prior = conversationHistory.slice();
     add('user', text);
     $('input').value = '';
     $('input').disabled = true;
     $('send').disabled = true;
     try {
-      const headers = {
-        'Content-Type': 'application/json',
-        'X-Provider-API-Key': apiKey,
-        ...entitlementHeaders(),
-      };
       const res = await fetch('/api/chat', {
         method:'POST',
-        headers,
+        headers:{'Content-Type':'application/json', ...entitlementHeaders()},
         body:JSON.stringify({slug, message:text, history:prior, payer_mode:'BYOK'})
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || 'AIへの接続に失敗しました');
+      if (!res.ok) {
+        if (res.status === 401 && String(data.detail || '').includes('BYOK session')) setByokState(false, 0);
+        throw new Error(data.detail || 'AIへの接続に失敗しました');
+      }
       add('assistant', data.text);
       conversationHistory.push({role:'user', content:text});
       conversationHistory.push({role:'assistant', content:data.text});
@@ -144,6 +206,8 @@
   }
 
   $('unlock').addEventListener('click', unlock);
+  $('connect-byok').addEventListener('click', connectByok);
+  $('forget-byok').addEventListener('click', forgetByok);
   $('form').addEventListener('submit', (event) => {
     event.preventDefault();
     const text = $('input').value.trim();
