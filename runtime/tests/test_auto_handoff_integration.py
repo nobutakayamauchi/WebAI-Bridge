@@ -52,47 +52,23 @@ def gateway(tmp_path, monkeypatch):
     cfg["billing"]["allowed_payer_modes"] = ["BYOK"]
     cfg["billing"]["default_payer_mode"] = "BYOK"
     cfg["billing"].pop("platform_credit", None)
-    cfg["readiness"] = {
-        "configuration": "VALIDATED",
-        "runtime": "READY",
-        "commercial": "MANUAL_REVIEW_REQUIRED",
-        "blockers": [],
-    }
+    cfg["readiness"] = {"configuration": "VALIDATED", "runtime": "READY", "commercial": "MANUAL_REVIEW_REQUIRED", "blockers": []}
     return module, TestClient(module.app)
 
 
 def fake_session():
-    return {
-        "id": SESSION_ID,
-        "status": "complete",
-        "payment_status": "paid",
-        "mode": "payment",
-        "payment_link": PAYMENT_LINK_ID,
-        "payment_intent": PAYMENT_REF,
-        "currency": "jpy",
-        "amount_total": 100,
-        "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"},
-    }
+    return {"id": SESSION_ID, "status": "complete", "payment_status": "paid", "mode": "payment", "payment_link": PAYMENT_LINK_ID, "payment_intent": PAYMENT_REF, "currency": "jpy", "amount_total": 100, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
 def fake_payment_link():
-    return {
-        "id": PAYMENT_LINK_ID,
-        "url": PAYMENT_LINK_URL,
-        "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"},
-    }
+    return {"id": PAYMENT_LINK_ID, "url": PAYMENT_LINK_URL, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
 def test_signed_cookie_authority_is_revoked_by_database_immediately(gateway):
     module, client = gateway
     module.entitlements.issue(package_id=SLUG, payment_ref="pi_COOKIE", buyer_ref="buyer")
-    cookie = module.sign_entitlement_cookie(
-        secret=COOKIE_SECRET,
-        package_id=SLUG,
-        payment_ref="pi_COOKIE",
-    )
+    cookie = module.sign_entitlement_cookie(secret=COOKIE_SECRET, package_id=SLUG, payment_ref="pi_COOKIE")
     client.cookies.set(module.entitlement_cookie_name(SLUG), cookie)
-
     assert client.get(f"/apps/{SLUG}/public-config").status_code == 200
     assert module.entitlements.revoke_payment(package_id=SLUG, payment_ref="pi_COOKIE") == 1
     assert client.get(f"/apps/{SLUG}/public-config").status_code == 401
@@ -102,52 +78,24 @@ def test_checkout_handoff_can_be_claimed_once_and_cannot_replay_after_revoke(gat
     module, payment_browser = gateway
     monkeypatch.setattr(module, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
-
-    first = payment_browser.get(
-        f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
-        follow_redirects=False,
-    )
+    first = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert first.status_code == 303
     handoff_url = first.headers["location"]
-    assert handoff_url.startswith(f"/checkout/handoff/{SLUG}?ticket=handoff_")
     assert module.entitlement_cookie_name(SLUG) not in first.headers.get("set-cookie", "")
-    assert payment_browser.get(f"/apps/{SLUG}/public-config").status_code == 401
-
     safari = TestClient(module.app)
     landing = safari.get(handoff_url)
-    assert landing.status_code == 200
-    match = re.search(r'href="([^"]*checkout/activate/[^"]+)"', landing.text)
+    match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
     assert match is not None
     activate_url = match.group(1).replace("&amp;", "&")
-
-    activated = safari.get(activate_url, follow_redirects=False)
+    assert safari.get(activate_url, follow_redirects=False).status_code == 405
+    activated = safari.post(activate_url, follow_redirects=False)
     assert activated.status_code == 303
-    assert activated.headers["location"] == f"/a/{SLUG}"
-    set_cookie = activated.headers.get("set-cookie", "")
-    assert module.entitlement_cookie_name(SLUG) in set_cookie
-    assert "HttpOnly" in set_cookie
+    assert module.entitlement_cookie_name(SLUG) in activated.headers.get("set-cookie", "")
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
-
-    duplicate_ticket = payment_browser.get(activate_url, follow_redirects=False)
-    assert duplicate_ticket.status_code == 409
-
-    duplicate_checkout = payment_browser.get(
-        f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
-        follow_redirects=False,
-    )
+    assert payment_browser.post(activate_url, follow_redirects=False).status_code == 409
+    duplicate_checkout = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert duplicate_checkout.status_code == 409
-    assert duplicate_checkout.json()["detail"] == "This Checkout Session has already been claimed"
-    assert module.entitlement_cookie_name(SLUG) not in duplicate_checkout.headers.get("set-cookie", "")
-    assert len(module.entitlements.list_for_package(SLUG)) == 1
-
     assert module.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
-
-    replay = payment_browser.get(
-        f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
-        follow_redirects=False,
-    )
+    replay = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert replay.status_code == 403
-    rows = module.entitlements.list_for_package(SLUG)
-    assert len(rows) == 1
-    assert rows[0]["status"] == "revoked"

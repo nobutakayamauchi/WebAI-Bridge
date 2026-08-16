@@ -107,11 +107,14 @@ def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, mo
     assert landing.status_code == 200
     assert "Safari" in landing.text
     assert "購入者コード" in landing.text
-    match = re.search(r'href="([^"]*checkout/activate/[^"]+)"', landing.text)
+    match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
     assert match is not None
     activate_url = match.group(1).replace("&amp;", "&")
 
-    activated = safari.get(activate_url, follow_redirects=False)
+    # GET must not consume a one-time transfer authority.
+    assert safari.get(activate_url, follow_redirects=False).status_code == 405
+
+    activated = safari.post(activate_url, follow_redirects=False)
     assert activated.status_code == 303
     assert activated.headers["location"] == f"/a/{SLUG}"
     cookie = activated.headers.get("set-cookie", "")
@@ -120,7 +123,7 @@ def test_canonical_gateway_transfers_checkout_once_to_target_browser(gateway, mo
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
     assert payment_browser.get(f"/apps/{SLUG}/public-config").status_code == 401
 
-    assert payment_browser.get(activate_url, follow_redirects=False).status_code == 409
+    assert payment_browser.post(activate_url, follow_redirects=False).status_code == 409
     assert payment_browser.get(
         f"/checkout/complete/{SLUG}?session_id={SESSION_ID}",
         follow_redirects=False,
@@ -135,4 +138,4 @@ def test_canonical_gateway_exposes_browser_transfer_capability(gateway):
     response = client.get("/api/studio/options")
     assert response.status_code == 200, response.text
     options = response.json()
-    assert options["stripe_auto_handoff"] == "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_BROWSER_TRANSFER_V1"
+    assert options["stripe_auto_handoff"] == "BUY_ONCE_REDIRECT_VERIFICATION_SINGLE_CLAIM_BROWSER_TRANSFER_POST_V1"
