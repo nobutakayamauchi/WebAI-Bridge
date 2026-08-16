@@ -4,6 +4,7 @@ import argparse
 import getpass
 import hashlib
 import json
+from http.cookies import SimpleCookie
 
 from live_acceptance import SLUG_RE, UrllibRequester, normalize_base_url, _require_status
 
@@ -28,6 +29,20 @@ def _require_free_hosted_contract(config: dict, slug: str) -> dict:
     if "BYOK" not in payers:
         raise RuntimeError("free external dogfood requires BYOK to be allowed")
     return access
+
+
+def _opaque_cookie_header(response, slug: str) -> str:
+    raw = response.headers.get("set-cookie", "")
+    cookie = SimpleCookie()
+    cookie.load(raw)
+    name = f"webai_byok_{slug}"
+    morsel = cookie.get(name)
+    if morsel is None or not morsel.value.startswith("byok_"):
+        raise RuntimeError("BYOK session did not return the expected opaque HttpOnly cookie")
+    lower = raw.lower()
+    if "httponly" not in lower or "secure" not in lower or "samesite=strict" not in lower:
+        raise RuntimeError("BYOK session cookie is missing Secure/HttpOnly/SameSite=Strict")
+    return f"{name}={morsel.value}"
 
 
 def run_free_acceptance(
@@ -78,10 +93,32 @@ def run_free_acceptance(
 
     provider_evidence = {"gate": "live_provider", "status": "SKIPPED"}
     if provider_call:
+        session = requester.request(
+            "POST",
+            f"{base}/api/byok/session",
+            json_body={"slug": slug, "api_key": provider_key or ""},
+        )
+        _require_status(session, 200, "ephemeral BYOK session creation")
+        session_payload = session.json()
+        if session_payload.get("storage") != "PROCESS_MEMORY_ONLY" or session_payload.get("browser_api_key_retained") is not False:
+            raise RuntimeError("BYOK session did not report process-memory-only / no-browser-key retention")
+        cookie_header = _opaque_cookie_header(session, slug)
+        provider_key = None
+
+        status = requester.request(
+            "GET",
+            f"{base}/api/byok/session/{slug}",
+            headers={"Cookie": cookie_header},
+        )
+        _require_status(status, 200, "ephemeral BYOK session status")
+        if status.json().get("connected") is not True:
+            raise RuntimeError("ephemeral BYOK session was not connected after creation")
+        evidence.append({"gate": "ephemeral_byok_session", "status": "PASS", "browser_api_key_retained": False})
+
         chat = requester.request(
             "POST",
             f"{base}/api/chat",
-            headers={"X-Provider-API-Key": provider_key or ""},
+            headers={"Cookie": cookie_header},
             json_body={
                 "slug": slug,
                 "message": "Reply briefly to confirm this live WebAI Bridge free dogfood request.",
@@ -105,6 +142,13 @@ def run_free_acceptance(
             "response_chars": len(text),
             "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         }
+
+        forgotten = requester.request(
+            "DELETE",
+            f"{base}/api/byok/session/{slug}",
+            headers={"Cookie": cookie_header},
+        )
+        _require_status(forgotten, 200, "ephemeral BYOK session cleanup")
     evidence.append(provider_evidence)
 
     return {
