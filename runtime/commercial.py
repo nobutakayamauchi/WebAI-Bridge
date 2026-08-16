@@ -11,8 +11,20 @@ import app as core
 from byok_sessions import ByokSessionStore
 from commercial_studio import adapt_manual_hosted_entitlement
 from entitlement_cookies import sign_entitlement_cookie, verify_entitlement_cookie
-from entitlements import EntitlementStore
-from stripe_checkout import StripeCheckoutError, retrieve_checkout_session, validate_paid_checkout_session
+from entitlements import (
+    EntitlementStore,
+    PAYMENT_ACTIVE,
+    PAYMENT_EXPIRED,
+    PAYMENT_MISSING,
+    PAYMENT_REVOKED,
+)
+from stripe_checkout import (
+    StripeCheckoutError,
+    retrieve_checkout_session,
+    retrieve_payment_link,
+    validate_paid_checkout_session,
+    validate_payment_link_binding,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 ENTITLEMENT_DB = Path(os.getenv("WEB_AI_ENTITLEMENT_DB", BASE_DIR / ".runtime" / "webai-entitlements.sqlite3"))
@@ -227,12 +239,18 @@ def checkout_complete(slug: str, session_id: str, request: Request):
     try:
         session = retrieve_checkout_session(secret_key=STRIPE_SECRET_KEY, session_id=session_id)
         verified = validate_paid_checkout_session(session=session, app_config=app_config)
+        payment_link = retrieve_payment_link(
+            secret_key=STRIPE_SECRET_KEY,
+            payment_link_id=verified["payment_link_id"],
+        )
+        validate_payment_link_binding(payment_link=payment_link, app_config=app_config)
     except StripeCheckoutError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
     payment_ref = verified["payment_ref"]
     package_id = verified["package_id"]
-    if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
+    state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
+    if state == PAYMENT_MISSING:
         try:
             entitlements.issue(
                 package_id=package_id,
@@ -240,8 +258,18 @@ def checkout_complete(slug: str, session_id: str, request: Request):
                 payment_ref=payment_ref,
             )
         except ValueError:
-            if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
+            state = entitlements.payment_state(package_id=package_id, payment_ref=payment_ref)
+            if state != PAYMENT_ACTIVE:
                 raise HTTPException(status_code=409, detail="Checkout fulfillment could not establish an active entitlement") from None
+    elif state == PAYMENT_ACTIVE:
+        pass
+    elif state in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
+        raise HTTPException(status_code=403, detail="This payment's buyer access is no longer active")
+    else:
+        raise HTTPException(status_code=409, detail="Unknown entitlement lifecycle state")
+
+    if not entitlements.authorize_payment(package_id=package_id, payment_ref=payment_ref):
+        raise HTTPException(status_code=409, detail="Checkout fulfillment did not establish an active entitlement")
 
     response = RedirectResponse(url=f"/a/{slug}", status_code=303)
     response.headers["Cache-Control"] = "no-store"
