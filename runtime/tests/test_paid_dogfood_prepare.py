@@ -29,7 +29,8 @@ def test_prepare_installs_and_activates_paid_package_outside_repo(tmp_path):
     assert result["package_id"] == DOGFOOD_SLUG
     assert result["reused"] is False
     assert result["active"] is True
-    assert result["entitlement_issued"] is False
+    assert result["entitlement_issuance_by_preparer"] == "NONE"
+    assert "entitlement_issued" not in result
     assert result["secrets_in_output"] is False
     assert mode(config_dir) & 0o077 == 0
 
@@ -66,6 +67,7 @@ def test_prepare_is_idempotent_only_for_identical_authority(tmp_path):
     )
     assert first["reused"] is False
     assert second["reused"] is True
+    assert second["entitlement_issuance_by_preparer"] == "NONE"
 
     with pytest.raises(RuntimeError, match="does not match requested authority"):
         prepare_paid_dogfood(
