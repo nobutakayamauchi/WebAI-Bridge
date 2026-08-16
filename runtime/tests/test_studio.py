@@ -47,8 +47,7 @@ def base_payload():
         "platform_hard_limit_usd": "0",
         "default_model": "gpt-5.6-luna",
         "allowed_models": ["gpt-5.6-luna"],
-        "delivery_mode": "HOSTED_ONLY",
-        "portable_protection": "LICENSE_ONLY",
+        "protection_level": "LEVEL_4_HOSTED_ONLY",
         "portable_seat_limit": 1,
         "portable_copy_risk_acknowledged": False,
         "welcome": "Second AIです。",
@@ -68,11 +67,10 @@ def paid_payload(mode="PAID", price=1500):
     return payload
 
 
-def portable_payload(protection="LICENSE_ONLY"):
+def portable_payload(level="LEVEL_1_LICENSE_ONLY"):
     payload = base_payload()
     payload.update({
-        "delivery_mode": "PORTABLE_LICENSE",
-        "portable_protection": protection,
+        "protection_level": level,
         "portable_copy_risk_acknowledged": True,
     })
     return payload
@@ -102,6 +100,10 @@ def test_studio_page_and_options(studio_client):
     page = client.get("/studio")
     assert page.status_code == 200
     assert "Creator Studio" in page.text
+    assert "Level 1" in page.text
+    assert "Level 2" in page.text
+    assert "Level 3" in page.text
+    assert "Level 4" in page.text
     assert "コピー・解析・改変" in page.text
     options = client.get("/api/studio/options")
     assert options.status_code == 200
@@ -126,8 +128,11 @@ def test_byok_package_validates_without_runtime_write(studio_client):
     assert package["access"]["checkout"]["entitlement_verification"] == "NOT_REQUIRED"
     assert package["billing"]["allowed_payer_modes"] == ["BYOK"]
     assert "platform_credit" not in package["billing"]
+    assert package["delivery"]["protection_level"] == "LEVEL_4_HOSTED_ONLY"
     assert package["delivery"]["copy_protection_guarantee"] == "HOSTED_BOUNDARY"
     assert package["delivery"]["portable_protection"] == "NOT_APPLICABLE"
+    assert package["delivery"]["buyer_passphrase_required"] is False
+    assert package["delivery"]["seller_activation_required"] is False
     assert set(appmod.registry.apps) == before
 
 
@@ -284,50 +289,102 @@ def test_allowance_requires_positive_free_runs(studio_client):
     assert "included_runs" in str(res.json())
 
 
-def test_portable_delivery_requires_explicit_copy_risk_ack(studio_client):
+def test_levels_1_to_3_require_explicit_copy_risk_ack(studio_client):
     _, client = studio_client
-    payload = base_payload()
-    payload["delivery_mode"] = "PORTABLE_LICENSE"
-    payload["portable_copy_risk_acknowledged"] = False
-    res = client.post("/api/studio/validate", json=payload)
-    assert res.status_code == 422
-    assert "copy prevention is not guaranteed" in str(res.json()).lower()
+    for level in [
+        "LEVEL_1_LICENSE_ONLY",
+        "LEVEL_2_BUYER_PASSPHRASE",
+        "LEVEL_3_DUAL_CONTROL_ACTIVATION",
+    ]:
+        payload = base_payload()
+        payload["protection_level"] = level
+        payload["portable_copy_risk_acknowledged"] = False
+        res = client.post("/api/studio/validate", json=payload)
+        assert res.status_code == 422
+        assert "cannot guarantee technical copy prevention" in str(res.json()).lower()
 
 
-def test_portable_license_only_never_claims_technical_copy_protection(studio_client):
+def test_level_1_license_only_never_claims_technical_copy_protection(studio_client):
     _, client = studio_client
-    res = client.post("/api/studio/validate", json=portable_payload("LICENSE_ONLY"))
+    res = client.post("/api/studio/validate", json=portable_payload("LEVEL_1_LICENSE_ONLY"))
     assert res.status_code == 200
     body = res.json()
     delivery = body["package"]["delivery"]
+    assert delivery["mode"] == "PORTABLE_LICENSE"
+    assert delivery["protection_level"] == "LEVEL_1_LICENSE_ONLY"
     assert delivery["portable_protection"] == "LICENSE_ONLY"
+    assert delivery["buyer_passphrase_required"] is False
+    assert delivery["seller_activation_required"] is False
+    assert delivery["seat_limit"] == 0
+    assert delivery["protection_implementation"] == "AVAILABLE"
     assert delivery["copy_protection_guarantee"] == "NOT_GUARANTEED"
-    assert delivery["portable_copy_risk_acknowledged"] is True
     warnings = " ".join(body["warnings"]).lower()
     assert "not guaranteed" in warnings
 
 
-def test_portable_activation_is_only_planned_until_entitlement_exists(studio_client):
+def test_level_2_is_buyer_passphrase_contract_only(studio_client):
     _, client = studio_client
-    payload = portable_payload("ACTIVATION_REQUIRED")
+    res = client.post("/api/studio/validate", json=portable_payload("LEVEL_2_BUYER_PASSPHRASE"))
+    assert res.status_code == 200
+    body = res.json()
+    delivery = body["package"]["delivery"]
+    assert delivery["protection_level"] == "LEVEL_2_BUYER_PASSPHRASE"
+    assert delivery["portable_protection"] == "BUYER_PASSPHRASE"
+    assert delivery["buyer_passphrase_required"] is True
+    assert delivery["seller_activation_required"] is False
+    assert delivery["seat_limit"] == 0
+    assert delivery["protection_implementation"] == "CONTRACT_ONLY"
+    assert delivery["copy_protection_guarantee"] == "PLANNED_ENCRYPTION"
+    warnings = " ".join(body["warnings"]).lower()
+    assert "passphrase" in warnings
+    assert "not implemented" in warnings
+
+
+def test_level_3_is_dual_control_activation_contract_only(studio_client):
+    _, client = studio_client
+    payload = portable_payload("LEVEL_3_DUAL_CONTROL_ACTIVATION")
     payload["portable_seat_limit"] = 2
     res = client.post("/api/studio/validate", json=payload)
     assert res.status_code == 200
     body = res.json()
     delivery = body["package"]["delivery"]
+    assert delivery["protection_level"] == "LEVEL_3_DUAL_CONTROL_ACTIVATION"
     assert delivery["portable_protection"] == "ACTIVATION_REQUIRED"
+    assert delivery["buyer_passphrase_required"] is True
+    assert delivery["seller_activation_required"] is True
     assert delivery["seat_limit"] == 2
+    assert delivery["protection_implementation"] == "CONTRACT_ONLY"
     assert delivery["copy_protection_guarantee"] == "PLANNED_ENTITLEMENT"
     warnings = " ".join(body["warnings"]).lower()
+    assert "seller-signed activation" in warnings
     assert "not implemented" in warnings
-    assert "must not be sold as technically protected" in warnings
+
+
+def test_level_4_hosted_only_is_server_boundary(studio_client):
+    _, client = studio_client
+    payload = base_payload()
+    payload["portable_copy_risk_acknowledged"] = True
+    res = client.post("/api/studio/validate", json=payload)
+    assert res.status_code == 200
+    delivery = res.json()["package"]["delivery"]
+    assert delivery == {
+        "mode": "HOSTED_ONLY",
+        "protection_level": "LEVEL_4_HOSTED_ONLY",
+        "portable_protection": "NOT_APPLICABLE",
+        "buyer_passphrase_required": False,
+        "seller_activation_required": False,
+        "seat_limit": 0,
+        "protection_implementation": "AVAILABLE",
+        "copy_protection_guarantee": "HOSTED_BOUNDARY",
+        "portable_copy_risk_acknowledged": False,
+    }
 
 
 def test_paid_and_portable_are_explicit_warnings(studio_client):
     _, client = studio_client
     payload = paid_payload(price=500)
     payload.update({
-        "delivery_mode": "HOSTED_AND_PORTABLE",
+        "protection_level": "LEVEL_1_LICENSE_ONLY",
         "portable_copy_risk_acknowledged": True,
     })
     res = client.post("/api/studio/validate", json=payload)
