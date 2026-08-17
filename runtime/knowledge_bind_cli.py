@@ -95,8 +95,13 @@ def bind_package_text_knowledge(
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     max_chunks: int = DEFAULT_MAX_CHUNKS,
     chunk_chars: int = DEFAULT_CHUNK_CHARS,
+    allow_active: bool = False,
 ) -> dict:
     data = _load_package(package_path)
+    if data.get("status") in {"active", "dogfood"} and not allow_active:
+        raise SystemExit(
+            "Refusing to mutate runnable package Knowledge without explicit allow_active acknowledgement"
+        )
     knowledge_text = _read_knowledge(knowledge_source)
     slug = data["slug"]
     config_dir = package_path.parent.resolve()
@@ -194,6 +199,11 @@ def main() -> int:
     parser.add_argument("--max-context-chars", type=int, default=DEFAULT_MAX_CONTEXT_CHARS)
     parser.add_argument("--max-chunks", type=int, default=DEFAULT_MAX_CHUNKS)
     parser.add_argument("--chunk-chars", type=int, default=DEFAULT_CHUNK_CHARS)
+    parser.add_argument(
+        "--allow-active",
+        action="store_true",
+        help="Explicitly acknowledge mutation of an active/dogfood package; restart and preflight are still required",
+    )
     args = parser.parse_args()
     try:
         result = bind_package_text_knowledge(
@@ -202,6 +212,7 @@ def main() -> int:
             max_context_chars=args.max_context_chars,
             max_chunks=args.max_chunks,
             chunk_chars=args.chunk_chars,
+            allow_active=args.allow_active,
         )
     except (SystemExit, ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "FAIL", "error": str(exc), "secrets_in_output": False}, ensure_ascii=False, indent=2))
