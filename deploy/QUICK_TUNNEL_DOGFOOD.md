@@ -11,19 +11,49 @@ Official reference:
 
 ## Why use it here
 
-The first external dogfood does not need Stripe or a permanent domain. The checked-in free fixture can prove:
+The external dogfood path can prove:
 
 ```text
 real host
 → public HTTPS edge
 → commercial gateway
-→ FREE Hosted package
+→ Hosted package
 → buyer BYOK transport
 → live provider
 → iPhone/Safari
 ```
 
-Paid entitlement/Stripe evidence remains a separate later gate.
+Paid Stripe/entitlement evidence is a separate gate and has its own evidence record. A Quick Tunnel is still temporary perimeter infrastructure only.
+
+## Mobile operator rule: background long-running processes
+
+When operating from iPhone/Termius, do **not** keep Uvicorn and `cloudflared` attached to separate foreground SSH tabs. Mobile terminal suspension/termination can kill them and force the entire dogfood path to be rebuilt.
+
+Preferred dogfood posture:
+
+```text
+one interactive SSH shell
++ WebAI Bridge in background
++ cloudflared in background
++ logs tailed on demand
+```
+
+Example pattern:
+
+```bash
+nohup <webai-host-command> > /tmp/webai-paid.log 2>&1 &
+nohup cloudflared tunnel --url http://127.0.0.1:8080 > /tmp/webai-cloudflared.log 2>&1 &
+```
+
+Then inspect without owning extra terminal tabs:
+
+```bash
+pgrep -af 'uvicorn.*8080|cloudflared.*8080' || true
+tail -n 30 /tmp/webai-paid.log
+grep -o 'https://[^ ]*trycloudflare\.com' /tmp/webai-cloudflared.log | head -n1
+```
+
+This is a mobile dogfood convenience, not the production service manager. Production should use the normal systemd/Caddy deployment path.
 
 ## 1. Start the WebAI Bridge commercial gateway locally
 
@@ -37,21 +67,29 @@ Use the normal deployment identity/preflight requirements. Do not set `WEB_AI_AL
 
 The public request must arrive at the commercial gateway as HTTPS through trusted proxy headers. If the commercial gateway returns HTTP 426 through the tunnel, treat that as a failed transport gate; do not weaken the HTTPS rule just to make the tunnel pass.
 
+On desktop/server-oriented dogfood, foreground execution is acceptable. On iPhone/Termius, use the background pattern above.
+
 ## 2. Start a temporary Quick Tunnel
 
-With `cloudflared` installed on the same host:
+Foreground form:
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:8080
 ```
 
-The command prints a random public URL similar to:
+Mobile background form:
+
+```bash
+nohup cloudflared tunnel --url http://127.0.0.1:8080 > /tmp/webai-cloudflared.log 2>&1 &
+sleep 6
+grep -o 'https://[^ ]*trycloudflare\.com' /tmp/webai-cloudflared.log | head -n1
+```
+
+The command yields a random public URL similar to:
 
 ```text
 https://random-words.trycloudflare.com
 ```
-
-Keep that terminal/process running during the dogfood session.
 
 Do not treat the random URL as stable product infrastructure.
 
@@ -114,6 +152,23 @@ Observe:
 
 Record this separately from command-line acceptance.
 
+## Paid browser-handoff dogfood note
+
+For the BUY_ONCE paid path, keep the same background-process rule but use the paid handoff launcher/state directory. The live paid acceptance must separately prove:
+
+```text
+real Stripe Checkout
+→ live webhook 2xx
+→ entitlement persisted
+→ Safari checkout completion
+→ one-time handoff
+→ protected paid page
+→ ephemeral BYOK
+→ live provider response
+```
+
+Do not infer paid correctness from FREE acceptance alone.
+
 ## Boundaries
 
 Quick Tunnel success does **not** establish:
@@ -121,8 +176,8 @@ Quick Tunnel success does **not** establish:
 - permanent DNS ownership;
 - production TLS/reverse-proxy configuration;
 - stable URL availability;
-- paid entitlement correctness;
-- real Stripe payment;
-- production abuse/rate-limit posture.
+- production abuse/rate-limit posture;
+- production service supervision;
+- missed-event reconciliation.
 
 It exists only to shorten the path to real external runtime evidence.
