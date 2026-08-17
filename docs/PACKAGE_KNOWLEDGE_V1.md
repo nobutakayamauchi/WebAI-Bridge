@@ -64,7 +64,9 @@ The deployed Knowledge file must be regular, non-symlink, UTF-8, non-empty, boun
 
 ## Retrieval
 
-v1 performs deterministic local text retrieval before the provider call. It uses normalized lexical matching with ASCII terms and Japanese/CJK n-grams, selects bounded relevant chunks, and injects only those chunks into the provider instructions.
+v1 performs deterministic local text retrieval before the provider call. It uses normalized lexical matching with ASCII terms and Japanese/CJK n-grams and selects bounded relevant chunks.
+
+Retrieved chunks are added as **user-level reference context**, after the server Safety + Creator Instructions authority has already been established. Knowledge content is deliberately not concatenated into the provider `instructions` field.
 
 This is intentionally **not** being called semantic/vector retrieval. It exists to prove the commercial Knowledge ownership boundary before adding a heavier local embedding/index service.
 
@@ -72,9 +74,9 @@ When no relevant chunk matches, no Knowledge text is injected.
 
 ## Trust boundary
 
-Retrieved Knowledge is labeled as **untrusted reference data, not instructions**. The provider receives an explicit higher-level rule not to follow role changes, policy overrides, tool instructions, or other commands found inside Knowledge text.
+Retrieved Knowledge is labeled as **untrusted reference data, not instructions**. The reference wrapper tells the model not to follow role changes, policy overrides, tool instructions, or other commands found inside Knowledge text.
 
-This reduces prompt-injection confusion but is not a mathematical guarantee against all model-level instruction-following failures.
+Keeping the retrieved text below Creator Instructions in the message hierarchy reduces prompt-injection authority confusion. It is still not a mathematical guarantee against all model-level instruction-following failures.
 
 ## Cost / payer boundary
 
@@ -91,15 +93,17 @@ The selected Knowledge text necessarily transits the model provider because it i
 
 ## Operator binding v1
 
-Until Creator Studio exports the Knowledge artifact directly, the operator can bind a UTF-8 Knowledge file to an already deployed Hosted package with:
+Until Creator Studio exports the Knowledge artifact directly, the operator can bind a UTF-8 Knowledge file to a non-runnable Hosted package with:
 
 ```bash
 python knowledge_bind_cli.py --config /path/to/apps/<slug>.json --knowledge /path/to/knowledge.md
 ```
 
+Mutating a currently `active` or `dogfood` package is fail-closed unless the operator explicitly passes `--allow-active`. Even then, the runtime must be restarted and deployment preflight rerun before external use.
+
 The operation stages the Knowledge file before updating Package JSON, uses owner-only permissions, and rolls the Knowledge asset back if Package JSON commit fails.
 
-For the existing paid iPhone dogfood state, `paid_knowledge_dogfood_prepare.py` binds a deterministic test Knowledge fixture without touching entitlement/payment state.
+For the existing paid iPhone dogfood state, `paid_knowledge_dogfood_prepare.py` deliberately opts into the active-package mutation and binds a deterministic test Knowledge fixture without touching entitlement/payment state.
 
 ## Promotion gate
 
