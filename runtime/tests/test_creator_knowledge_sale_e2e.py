@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import sys
 import types
@@ -23,6 +24,7 @@ PAYMENT_LINK_ID = "plink_CREATORKNOWLEDGEE2E"
 SESSION_ID = "cs_test_CREATORKNOWLEDGEE2E"
 PAYMENT_REF = "pi_CREATORKNOWLEDGEE2E"
 COOKIE_SECRET = "k" * 48
+CREATOR_PASSWORD = "creator-e2e-password-abcdefghijklmnopqrstuvwxyz"
 KNOWLEDGE_TEXT = """# 購入者向け商品Knowledge
 この商品の確認用合言葉は「銀色のハヤブサ」です。
 内部商品識別子は FALCON-KNOWLEDGE-8842 です。
@@ -93,6 +95,12 @@ def _fake_payment_link() -> dict:
 def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / "apps"
     config_dir.mkdir(mode=0o700)
+    creator_password = tmp_path / "creator-password.secret"
+    creator_session = tmp_path / "creator-session.secret"
+    creator_password.write_text(CREATOR_PASSWORD + "\n", encoding="utf-8")
+    creator_session.write_text("creator-session-secret-abcdefghijklmnopqrstuvwxyz0123456789\n", encoding="utf-8")
+    os.chmod(creator_password, 0o600)
+    os.chmod(creator_session, 0o600)
 
     monkeypatch.setenv("WEB_AI_CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("WEB_AI_LEDGER_PATH", str(tmp_path / "ledger.sqlite3"))
@@ -104,6 +112,10 @@ def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp
     monkeypatch.setenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", COOKIE_SECRET)
     monkeypatch.setenv("WEB_AI_STRIPE_SECRET_KEY", "rk_test_creator_knowledge_e2e")
     monkeypatch.setenv("WEB_AI_STUDIO_ENABLED", "1")
+    monkeypatch.setenv("WEB_AI_CREATOR_AUTH_ENABLED", "1")
+    monkeypatch.setenv("WEB_AI_CREATOR_PASSWORD_FILE", str(creator_password))
+    monkeypatch.setenv("WEB_AI_CREATOR_SESSION_SECRET_FILE", str(creator_session))
+    monkeypatch.setenv("WEB_AI_CREATOR_SESSION_TTL_SECONDS", "3600")
 
     for name in [
         "commercial_handoff", "commercial", "app", "entitlements", "handoff_tickets",
@@ -113,6 +125,16 @@ def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp
 
     gateway = importlib.import_module("commercial_handoff")
     client = TestClient(gateway.app)
+
+    # 0) CREATOR AUTH -> Studio is invisible until the creator session exists.
+    assert client.get("/api/studio/options").status_code == 401
+    login = client.post(
+        "/creator/login",
+        data={"password": CREATOR_PASSWORD, "next": "/studio"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+    assert login.headers["location"] == "/studio"
 
     # 1) CREATOR STUDIO KNOWLEDGE INPUT -> validated three-artifact export contract.
     options_response = client.get("/api/studio/options")

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 # Paid browser handoff + server-owned PACKAGE_TEXT Knowledge route surface.
-# This surface now also owns the Knowledge-aware Creator Studio and fails
-# startup closed when an activated PACKAGE_TEXT artifact is missing/corrupt.
+# This surface owns the Knowledge-aware Creator Studio and protects it with
+# fail-closed creator authentication whenever Studio is publicly enabled.
 import commercial as base
+from creator_auth import install_creator_auth
 from knowledge_artifact import validate_package_text_artifact
 from knowledge_studio import install_knowledge_studio_routes
 from package_knowledge import chat_with_package_text
@@ -35,4 +36,5 @@ for _config in base.core.registry.apps.values():
 
 base.core.chat = _knowledge_chat
 install_knowledge_studio_routes(base)
+CREATOR_AUTH = install_creator_auth(base)
 app = base.app
