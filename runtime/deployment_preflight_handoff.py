@@ -6,10 +6,40 @@ import os
 from pathlib import Path
 
 from deployment_preflight import run_preflight
+from package_knowledge import PACKAGE_TEXT_BACKEND, validate_package_text_binding
 
 BASE_DIR = Path(__file__).resolve().parent
 EXPECTED_SURFACE = "commercial_handoff:app"
 CANONICAL_SURFACE = "commercial:app"
+
+
+def _package_text_findings(source: dict[str, str]) -> tuple[set[str], list[dict]]:
+    config_dir = Path(source.get("WEB_AI_CONFIG_DIR") or (BASE_DIR / "apps")).resolve()
+    local_scopes: set[str] = set()
+    findings: list[dict] = []
+    if not config_dir.exists() or not config_dir.is_dir():
+        return local_scopes, findings
+    for path in sorted(config_dir.glob("*.json")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        knowledge = data.get("knowledge") or {}
+        if data.get("status") != "active" or not knowledge.get("enabled"):
+            continue
+        if knowledge.get("backend") != PACKAGE_TEXT_BACKEND:
+            continue
+        scope = f"package:{path.name}"
+        local_scopes.add(scope)
+        for error in validate_package_text_binding(config_dir=config_dir, app_config=data):
+            findings.append({
+                "code": "ACTIVE_PACKAGE_TEXT_KNOWLEDGE_INVALID",
+                "scope": scope,
+                "message": error,
+            })
+    return local_scopes, findings
 
 
 def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
@@ -35,12 +65,22 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
     canonical_env["WEB_AI_ROUTE_SURFACE"] = CANONICAL_SURFACE
     result = run_preflight(env=canonical_env)
 
-    if findings:
-        result["findings"] = list(result.get("findings") or []) + findings
-        result["ok"] = False
+    local_scopes, knowledge_findings = _package_text_findings(source)
+    base_findings = []
+    for item in result.get("findings") or []:
+        if (
+            item.get("code") == "ACTIVE_KNOWLEDGE_BINDING_MISSING"
+            and item.get("scope") in local_scopes
+        ):
+            continue
+        base_findings.append(item)
 
+    combined = base_findings + findings + knowledge_findings
+    result["findings"] = combined
+    result["ok"] = not combined
     result["validated_route_surface"] = actual_surface
     result["canonical_paid_preflight_surface"] = CANONICAL_SURFACE
+    result["package_text_knowledge_packages"] = len(local_scopes)
     return result
 
 
