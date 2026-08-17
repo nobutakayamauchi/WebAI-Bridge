@@ -5,12 +5,17 @@ import json
 import os
 from pathlib import Path
 
+from creator_auth import creator_auth_findings
 from deployment_preflight import run_preflight
 from package_knowledge import PACKAGE_TEXT_BACKEND, validate_package_text_binding
 
 BASE_DIR = Path(__file__).resolve().parent
 EXPECTED_SURFACE = "commercial_handoff:app"
 CANONICAL_SURFACE = "commercial:app"
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _package_text_findings(source: dict[str, str]) -> tuple[set[str], list[dict]]:
@@ -61,6 +66,10 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
             "message": "commercial_handoff.py is missing from the runtime directory",
         })
 
+    creator_findings = creator_auth_findings(env=source, runtime_dir=BASE_DIR)
+    studio_enabled = _truthy(source.get("WEB_AI_STUDIO_ENABLED"))
+    creator_auth_protected = studio_enabled and not creator_findings
+
     canonical_env = dict(source)
     canonical_env["WEB_AI_ROUTE_SURFACE"] = CANONICAL_SURFACE
     result = run_preflight(env=canonical_env)
@@ -73,14 +82,26 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
             and item.get("scope") in local_scopes
         ):
             continue
+        # Canonical paid gateway deliberately forbids public Studio. The handoff
+        # surface may expose it only when this preflight independently proves
+        # creator-only authentication is configured with private secret files.
+        if item.get("code") == "PUBLIC_STUDIO_ENABLED" and creator_auth_protected:
+            continue
         base_findings.append(item)
 
-    combined = base_findings + findings + knowledge_findings
+    combined = base_findings + findings + knowledge_findings + creator_findings
     result["findings"] = combined
     result["ok"] = not combined
+    result["status"] = "PASS" if not combined else "FAIL"
     result["validated_route_surface"] = actual_surface
     result["canonical_paid_preflight_surface"] = CANONICAL_SURFACE
     result["package_text_knowledge_packages"] = len(local_scopes)
+    result["creator_studio_enabled"] = studio_enabled
+    result["creator_auth_protected"] = creator_auth_protected and not combined
+    if studio_enabled:
+        result["creator_auth_mode"] = "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1" if creator_auth_protected else "INVALID"
+    else:
+        result["creator_auth_mode"] = "STUDIO_DISABLED"
     return result
 
 
