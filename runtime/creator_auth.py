@@ -11,7 +11,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -70,8 +70,8 @@ def _secret_file_findings(*, env: dict[str, str], env_name: str, label: str, run
     if mode & 0o077:
         findings.append({"code": f"{code}_FILE_PERMISSIONS_TOO_OPEN", "scope": "creator-auth", "message": f"{env_name} must be owner-only (0600)"})
     parent = path.parent
-    if parent.exists() and stat.S_IMODE(parent.stat().st_mode) & 0o002:
-        findings.append({"code": f"{code}_PARENT_WORLD_WRITABLE", "scope": "creator-auth", "message": f"Parent directory for {env_name} must not be world-writable"})
+    if parent.exists() and stat.S_IMODE(parent.stat().st_mode) & 0o022:
+        findings.append({"code": f"{code}_PARENT_PERMISSIONS_TOO_OPEN", "scope": "creator-auth", "message": f"Parent directory for {env_name} must not be group/world writable"})
     try:
         value = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError) as exc:
@@ -177,7 +177,7 @@ def sign_creator_session(*, config: CreatorAuthConfig, now: int | None = None) -
 
 
 def verify_creator_session(*, config: CreatorAuthConfig, cookie: str | None, now: int | None = None) -> bool:
-    if not cookie or "." not in cookie:
+    if not cookie or len(cookie) > 4096 or "." not in cookie:
         return False
     encoded, supplied_sig = cookie.split(".", 1)
     expected_sig = _b64url(hmac.new(config.session_secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest())
@@ -211,9 +211,18 @@ def _secure_headers(response: Response) -> Response:
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     return response
+
+
+def _transport_failure(base, request: Request) -> Response | None:
+    try:
+        base.require_secure_transport(request)
+    except HTTPException as exc:
+        return _secure_headers(JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers))
+    return None
 
 
 def _login_html(*, error: str = "", next_path: str = "/studio") -> str:
@@ -255,7 +264,9 @@ def install_creator_auth(base) -> dict:
         protected = path == "/studio" or path.startswith("/api/studio/")
         if not protected:
             return await call_next(request)
-        base.require_secure_transport(request)
+        transport_failure = _transport_failure(base, request)
+        if transport_failure is not None:
+            return transport_failure
         if not authenticated(request):
             if request.method == "GET" and path == "/studio":
                 response = RedirectResponse(url="/creator/login?next=%2Fstudio", status_code=303)
@@ -282,7 +293,11 @@ def install_creator_auth(base) -> dict:
         content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
         if content_type != "application/x-www-form-urlencoded":
             raise HTTPException(status_code=415, detail="Creator login requires form encoding")
-        parsed = parse_qs(raw.decode("utf-8", errors="strict"), keep_blank_values=True)
+        try:
+            decoded = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Creator login form must be UTF-8") from None
+        parsed = parse_qs(decoded, keep_blank_values=True)
         supplied = (parsed.get("password") or [""])[0]
         target = _safe_next((parsed.get("next") or ["/studio"])[0])
         if not password_matches(config=config, supplied=supplied):
@@ -306,6 +321,8 @@ def install_creator_auth(base) -> dict:
     @base.app.post("/creator/logout")
     def creator_logout(request: Request):
         base.require_secure_transport(request)
+        if not authenticated(request):
+            raise HTTPException(status_code=401, detail="Creator authentication required")
         response = RedirectResponse(url="/creator/login", status_code=303)
         response.delete_cookie(
             key=COOKIE_NAME,
