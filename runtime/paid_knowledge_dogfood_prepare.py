@@ -41,6 +41,7 @@ def prepare(*, state_dir: Path) -> dict:
             max_context_chars=4000,
             max_chunks=3,
             chunk_chars=1200,
+            allow_active=True,
         )
     finally:
         source.unlink(missing_ok=True)
