@@ -7,13 +7,17 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import Field
 
-from commercial_studio import adapt_manual_hosted_entitlement
+from commercial_studio import MANUAL_WARNING, adapt_manual_hosted_entitlement
 from knowledge_artifact import canonical_knowledge_file, text_sha256
 from package_knowledge import PACKAGE_TEXT_BACKEND
 from studio import StudioDraft, StudioValidationError
 
 BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_STUDIO_PAGE = BASE_DIR.parent / "creator-studio" / "knowledge.html"
+KNOWLEDGE_SALE_WARNING = (
+    "Paid Hosted sale still requires explicit package activation and correctly configured Stripe checkout/webhook/browser handoff. "
+    "Draft validation does not itself prove a live Stripe endpoint or buyer entitlement."
+)
 
 
 class KnowledgeStudioDraft(StudioDraft):
@@ -97,7 +101,12 @@ def build_knowledge_studio_result(*, core, payload: KnowledgeStudioDraft) -> dic
 
     # Re-run the commercial adapter after final package construction so the
     # narrow BUY_ONCE/SUBSCRIPTION + Hosted + BYOK activation path is represented.
-    return adapt_manual_hosted_entitlement(result)
+    adapted = adapt_manual_hosted_entitlement(result)
+    if payload.access_mode in {"BUY_ONCE", "SUBSCRIPTION"}:
+        adapted["warnings"] = [w for w in adapted.get("warnings", []) if w != MANUAL_WARNING]
+        if KNOWLEDGE_SALE_WARNING not in adapted["warnings"]:
+            adapted["warnings"].append(KNOWLEDGE_SALE_WARNING)
+    return adapted
 
 
 def install_knowledge_studio_routes(base) -> None:
