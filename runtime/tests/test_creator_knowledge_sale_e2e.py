@@ -19,9 +19,9 @@ if str(RUNTIME_DIR) not in sys.path:
 SLUG = "creator-knowledge-sale-e2e"
 PRICE_JPY = 500
 PAYMENT_LINK_URL = "https://buy.stripe.com/creator-knowledge-sale-e2e"
-PAYMENT_LINK_ID = "plink_CREATOR_KNOWLEDGE_E2E"
-SESSION_ID = "cs_test_CREATOR_KNOWLEDGE_E2E"
-PAYMENT_REF = "pi_CREATOR_KNOWLEDGE_E2E"
+PAYMENT_LINK_ID = "plink_CREATORKNOWLEDGEE2E"
+SESSION_ID = "cs_test_CREATORKNOWLEDGEE2E"
+PAYMENT_REF = "pi_CREATORKNOWLEDGEE2E"
 COOKIE_SECRET = "k" * 48
 KNOWLEDGE_TEXT = """# 購入者向け商品Knowledge
 この商品の確認用合言葉は「銀色のハヤブサ」です。
