@@ -2,27 +2,23 @@
 
 Date: 2026-08-18
 Method: `Ultimate Loop / Raison d'être / DA / Counter-DA / METEOR`
-Status: `REALITY_LOOP_2 / CODE_REPAIRS_IN_PROGRESS / EXACT_REVISION_REVALIDATION_REQUIRED`
+Status: `REALITY_LOOP_2 / CODE-SIDE PRE-MERGE CANDIDATE / EXACT-HEAD REALITY REVALIDATION REQUIRED`
 
 ## Protected outcome
 
-A creator can run WebAI Bridge on a stable HTTPS hostname, create and directly publish a second paid Hosted/BYOK/Knowledge AI from the authenticated smartphone Creator Studio, sell it through the Stripe entitlement path, and preserve safe stop/recovery boundaries without mutating the deployed Git tree or leaking buyer/creator authority into URLs or retained logs.
+A creator can run WebAI Bridge on a stable HTTPS hostname, create and directly publish a second paid Hosted/BYOK/PACKAGE_TEXT AI from authenticated smartphone Creator Studio, sell it through Stripe, and preserve fail-closed package/payment/browser/credential authority boundaries without mutating the deployed Git tree.
 
-The goal is **not** to implement every future payer, portable, wallet, subscription, plugin, or admin feature before the first bounded Hosted v1 release.
+The bounded Hosted v1 goal does **not** require portable runtime, wallet/platform credit, creator-funded or sponsored inference, full subscription automation, multi-worker BYOK, DRM, or OpenAI Plugin delivery.
 
-## Raison d'être
+## Reality anchor
 
-The product already proved the commercial chain in dogfood. PR #30 then connected Creator Studio to deterministic fixed-domain deployment and reached a code-side PRE-MERGE STOP.
-
-The next step was deliberately not more simulation: deploy that exact revision to the controlled Oracle host and attack it from the real iPhone/Stripe boundary.
-
-That real run on:
+The first fixed-domain Oracle/iPhone run deployed:
 
 ```text
 9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1
 ```
 
-proved:
+and proved on real infrastructure:
 
 ```text
 exact revision + systemd preflight
@@ -38,34 +34,29 @@ exact revision + systemd preflight
 → same buyer immediately denied with 401
 ```
 
-The same run also exposed real-environment faults that CI had not forced. Those findings are now inputs to a second Ultimate Loop. Therefore the successful old-revision evidence does **not** certify the newer branch head.
+That run also exposed production-only failures. It is architecture evidence, **not** certification of the newer PR head.
 
-## Loop 1 — code-side findings already closed
+## Loop 1 — production composition findings already closed
 
-### Finding 1 — direct publish was disconnected from production rendering
-
-Observed:
-
-```text
-Creator Studio direct publish exists
-BUT
-render_deployment.py forced commercial:app + Studio OFF
-```
+### 1. Creator direct publish was disconnected from deterministic production rendering
 
 Resolution: explicit profiles.
 
 ```text
 BUYER_ONLY_COMMERCIAL_V1
-→ commercial:app
+→ commercial_bound:app
 → Studio OFF
+→ package authority runtime/apps
 
 CREATOR_STUDIO_COMMERCIAL_V1
 → commercial_handoff:app
-→ Studio ON
-→ creator auth required
+→ Studio ON + creator auth
+→ package authority state/apps
 ```
 
-### Finding 2 — systemd sandbox would kill direct publish
+`commercial_bound:app` and `commercial_handoff:app` both preserve `commercial:app` as the canonical paid core while adding profile-specific browser/Creator behavior.
+
+### 2. systemd sandbox would make Creator publish fail only in production
 
 Bad composition:
 
@@ -75,156 +66,156 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/webai-bridge
 ```
 
-Resolution:
+Creator-managed resolution:
 
 ```text
 WEB_AI_CONFIG_DIR=/var/lib/webai-bridge/apps
 package_authority=STATE_DIR
 ```
 
-The Git/runtime tree stays read-only; mutable creator package authority stays in the private state tree.
+The deployed Git/runtime tree remains read-only.
 
-### Finding 3 — active paid surface could start with guaranteed late failure
+### 3. Active paid runtime could start with guaranteed late failure
 
-For active paid `commercial_handoff`, local preflight requires:
+Both paid production profiles now require, when an active paid package exists:
 
 ```text
 WEB_AI_ENTITLEMENT_COOKIE_SECRET
 WEB_AI_STRIPE_SECRET_KEY
 WEB_AI_STRIPE_WEBHOOK_SECRET
+safe WEB_AI_ENV_FILE outside runtime
 ```
 
-Missing/structurally invalid values stop startup before a buyer reaches the broken route.
+The secret-file and live-sale checks are shared so buyer-only and Creator-managed startup policy cannot silently diverge.
 
-### Finding 4 — second-product acceptance was weaker than the product claim
+### 4. Second-product proof had mocked the package authority boundary
 
-Added real filesystem/registry E2E proving two direct-published products can coexist and that an active slug cannot be silently overwritten.
+A real filesystem/registry E2E now proves:
 
-### Finding 5 — documentation had become false runtime evidence
+- Package JSON + Instructions + Knowledge install through the actual bundle authority;
+- Package JSON commits last;
+- activation revalidates Knowledge digest;
+- two active products coexist;
+- active slug silent overwrite is refused;
+- product 1 remains isolated.
 
-Root/runtime/deploy documentation was aligned to the actual current Hosted path while preserving explicit non-claims.
+### 5. Documentation had become false runtime evidence
 
-### Finding 6 — valid secrets in an unsafe env file are still a breach
+Root/runtime/deploy/goal documentation is kept aligned to current Hosted behavior and explicit non-claims.
 
-The deployment pins:
+## Loop 2 — real Oracle/iPhone/Stripe findings
+
+### 6. Stripe Payment Link metadata was weaker than runtime binding
+
+The first real link did not carry the runtime-required package/access metadata.
+
+Required remote contract:
 
 ```text
-WEB_AI_ENV_FILE=/etc/webai-bridge/webai-bridge.env
+metadata.webai_package_id = {slug}
+metadata.access_mode = BUY_ONCE
 ```
 
-and rejects unsafe/missing/symlink/world-readable/group-writable runtime secret authority.
+Runtime validates the verified Checkout Session and Payment Link against the package before fulfillment.
 
-## Loop 2 — real Oracle/iPhone findings
+### 7. Stripe webhook still targeted a retired Quick Tunnel
 
-### Reality finding 7 — one-time handoff authority appeared in URL and retained journal
+A healthy local process and valid secret values did not prove the Stripe control plane pointed at the fixed domain.
 
-Observed in the real host:
+Resolution: separate external deployment gate:
+
+```text
+runtime/stripe_external_acceptance.py
+```
+
+It validates:
+
+- Payment Link URL and metadata binding;
+- active/live mode;
+- amount/currency/one-time line items;
+- exact fixed-domain `{CHECKOUT_SESSION_ID}` completion redirect;
+- exact fixed-domain webhook URL;
+- required fulfillment events.
+
+Counter-DA: this remains **outside `ExecStartPre`**. A temporary Stripe API outage must not prevent a healthy service restart.
+
+### 8. External Stripe list truncation could create a false PASS
+
+Counter-DA found the first external validator paginated Payment Links/webhooks but fetched only the first Payment Link line-items page.
+
+Resolution:
+
+- all Stripe list authorities use the same complete-pagination helper;
+- Payment Links, webhook endpoints and Payment Link line items paginate to completion;
+- non-object list entries, missing advancement ids, and repeated pagination cursors fail closed.
+
+A 101st remote object cannot be silently ignored by the acceptance gate.
+
+### 9. One-time `handoff_...` authority appeared in URL and journal
+
+Observed on the real host:
 
 ```text
 GET /checkout/handoff/{slug}?ticket=handoff_...
 POST /checkout/activate/{slug}?ticket=handoff_...
 ```
 
-Uvicorn's default access log retained the full request target, and the browser-visible URL itself contained the one-time authority.
-
-This violated the external acceptance rule:
+Resolution:
 
 ```text
-NO CREDENTIAL / AUTHORITY TOKEN IN VISIBLE URL OR RETAINED EVIDENCE
-```
-
-A first response — disabling Uvicorn access logs — was necessary but insufficient because it did not remove authority from the browser URL.
-
-#### Resolution
-
-The current challenger changes the transport itself:
-
-```text
-verified Stripe completion
-→ issue one-time handoff code; store only hash server-side
-→ same-browser activation: hidden POST body
+verified completion
+→ hashed one-time handoff code
+→ hidden POST body for same-browser activation
 OR
-→ clean /checkout/handoff/{slug} page in Safari
-→ user copies one-time transfer code
-→ POST body to /checkout/activate/{slug}
+→ clean /checkout/handoff/{slug} manual transfer page
+→ POST /checkout/activate/{slug}
 → entitlement cookie
 ```
 
 Properties:
 
-- `handoff_...` is never embedded in handoff/activation URLs;
-- activation is POST-only;
-- one-time/TTL/atomic-consume semantics are retained;
-- completion and handoff pages are `no-store`;
-- completion page scrubs the Stripe `session_id` from the visible address bar after verification;
-- production Uvicorn access logging is disabled as defense in depth;
-- deployment manifest records that access logging/query-authority retention are disabled.
+- no handoff authority in handoff/activation URLs;
+- POST-only activation;
+- one-time atomic consume + TTL;
+- no-store completion/handoff responses;
+- production Uvicorn access logging disabled as defense in depth.
 
-Cross-browser convenience is intentionally weaker than leaking an authority-bearing URL: a buyer moving from an embedded browser to Safari copies a short-lived one-time transfer code into a clean Safari claim page.
+### 10. Counter-DA: a leaked Checkout Session id was still enough to mint new browser authority
 
-### Reality finding 8 — Stripe remote configuration can drift outside local preflight
+Moving `handoff_...` out of the URL was insufficient. Before the deeper repair, anyone possessing a valid paid `session_id` could call the completion route and mint a fresh one-time handoff code.
 
-The first real payment exposed two external mismatches:
+That made the Stripe Session locator an accidental authority token.
 
-- Payment Link metadata/redirect contract was not yet aligned to the package/runtime contract;
-- the Stripe webhook endpoint still targeted a retired Quick Tunnel instead of the fixed hostname.
+#### Resolution — initiating-browser binding
 
-The local service was healthy and all secret **values** were present, so startup preflight could not detect this remote configuration drift.
-
-#### Counter-DA
-
-Do **not** make systemd startup depend on Stripe API availability. A temporary Stripe control-plane outage must not prevent an otherwise healthy service from restarting.
-
-#### Resolution
-
-Add a separate external deployment/acceptance validator:
+Normal buyer flow is now:
 
 ```text
-stripe_external_acceptance.py
+/a/{slug}
+→ /api/buy/{slug}
+→ generate public wb_... client_reference_id
+→ signed HttpOnly package-scoped initiating-browser cookie
+→ Stripe Payment Link + client_reference_id
+→ payment/webhook entitlement
+→ /checkout/complete/{slug}?session_id=...
+→ verify Stripe Session + Payment Link
+→ require Stripe client_reference_id == signed initiating-browser cookie
+→ only then mint one-time body handoff code
 ```
 
-It validates active runnable BUY_ONCE packages against Stripe remote state:
+Security consequences:
 
-- Payment Link URL binding;
-- `webai_package_id` metadata;
-- `access_mode=BUY_ONCE` metadata;
-- active/live mode;
-- amount/currency/one-time line items;
-- exact fixed-domain completion redirect with `{CHECKOUT_SESSION_ID}`;
-- exact fixed-domain webhook endpoint;
-- enabled live endpoint;
-- both required Checkout fulfillment events.
+- Checkout Session id is a transaction locator, not sufficient browser authority;
+- a valid paid Session without the initiating-browser proof returns 403;
+- a mismatched public reference returns 403;
+- browser proof is short-lived and cleared after successful completion;
+- replay after proof consumption is denied;
+- raw Payment Link is configuration, not the normal distribution URL;
+- Creator publish output exposes `/a/{slug}` and `/api/buy/{slug}`, not the raw Stripe URL as the sale path.
 
-This is a deployment gate, not a runtime liveness gate.
+The browser-only wrapper is used by both deterministic production profiles.
 
-### Reality finding 9 — `_`/`-` compound Knowledge terms were opaque to component queries
-
-Fixture:
-
-```text
-ACCEPTANCE_SECRET_PHRASE = ORACLE_FIXED_DOMAIN_SECOND_PRODUCT_20260818
-```
-
-Observed:
-
-- query containing `ACCEPTANCE_SECRET_PHRASE` retrieved the chunk and yielded a correct Knowledge-dependent `YES`;
-- query asking only whether the environment was `ORACLE / AWS / AZURE` returned `不明`.
-
-Cause:
-
-The ASCII tokenizer retained `_`/`-` compounds as one token, so `ORACLE` did not intersect `ORACLE_FIXED_DOMAIN_...`.
-
-#### Resolution
-
-Preserve the full compound token for specificity **and** index meaningful component tokens split on `_`/`-`.
-
-Regression tests cover:
-
-- underscore component retrieval;
-- hyphen component retrieval;
-- exact compound retrieval remains intact.
-
-### Reality finding 10 — missing Checkout Session surfaced raw framework validation JSON
+### 11. Missing Checkout Session exposed raw framework JSON
 
 Observed on iPhone:
 
@@ -232,45 +223,70 @@ Observed on iPhone:
 {"detail":[{"type":"missing","loc":["query","session_id"],...}]}
 ```
 
-A later request with a real Checkout Session ID completed successfully, so the observed 422 was not treated as proof of Stripe substitution failure.
+Resolution: missing `session_id` fails closed in application code with human-readable no-store HTML 400. No payment/browser authority is minted.
 
-#### Resolution
+### 12. PACKAGE_TEXT `_`/`-` compounds were opaque to component queries
 
-Make `session_id` optional at the route boundary, fail closed in application code, and return a human-readable no-store HTML error with HTTP 400 when it is absent.
-
-This keeps the security requirement — no payment claim without a verified Stripe Session — while removing raw framework UX.
-
-## Reality proof retained from the first fixed-domain run
-
-The old revision established that the major authority order is viable:
+Real fixture:
 
 ```text
-PAYMENT VERIFIED
-→ DURABLE ENTITLEMENT ACTIVE
-→ BROWSER ACCESS
-→ BYOK SESSION
-→ MODEL EXECUTION
+ORACLE_FIXED_DOMAIN_SECOND_PRODUCT_20260818
 ```
 
-and that revocation remains authoritative:
+`ACCEPTANCE_SECRET_PHRASE` retrieval proved PACKAGE_TEXT worked, but an `ORACLE`-only question did not match the underscore compound.
+
+Resolution: preserve the full compound token **and** index meaningful `_`/`-` components. Regression tests cover underscore, hyphen, and exact-compound behavior.
+
+### 13. BYOK session survived while access authority was revoked
+
+The real run proved the desired order:
 
 ```text
-BYOK SESSION STILL EXISTS
+BYOK SESSION STILL CONNECTED
 + ENTITLEMENT REVOKED
-→ NEXT CHAT = 401
+→ next /api/chat = 401
 ```
 
-So:
+Invariant retained:
 
 ```text
 BYOK CONNECTED != ACCESS AUTHORITY
 ```
 
-That result remains useful architecture evidence, but every code change to handoff/retrieval/deployment now requires exact-revision revalidation before release status advances.
+## Counter-DA regression set
+
+Current CI must preserve or reject safely under at least:
+
+- Creator Studio exposed without creator auth;
+- unsafe creator password/session files;
+- active paid runtime without cookie/Stripe/webhook secrets;
+- unsafe commercial env-file authority;
+- buyer-only and Creator-managed preflight policy drift;
+- mutable creator package authority under a read-only systemd tree;
+- active Package/Knowledge integrity failure;
+- product 2 corrupting product 1;
+- active slug silent overwrite;
+- raw Payment Link returned as normal Creator publish sale URL;
+- checkout started without browser binding;
+- valid paid Session presented without initiating-browser cookie;
+- mismatched Stripe `client_reference_id`;
+- browser-binding cookie tamper/wrong secret/expiry;
+- handoff authority in a query URL;
+- activation through GET;
+- handoff-code replay;
+- missing checkout Session raw framework error;
+- stale Quick-Tunnel webhook satisfying fixed-domain acceptance;
+- Payment Link metadata/amount/currency/recurrence/redirect drift;
+- Stripe pagination truncation/repeated cursor;
+- `_`/`-` compound component retrieval regression;
+- revoke failing to override an existing BYOK session;
+- generated production artifacts containing secrets;
+- production route/profile mismatch;
+- raw Uvicorn access logging re-enabled by the deterministic renderer.
 
 ## Frozen Hosted v1 candidate scope
 
-Required for this bounded release:
+Required:
 
 ```text
 HOSTED_ONLY
@@ -279,99 +295,68 @@ BYOK inference
 server-owned Instructions
 PACKAGE_TEXT Knowledge
 creator authentication
-Stripe Payment Link
-Stripe webhook entitlement
-queryless/body browser handoff
+Stripe Payment Link + webhook entitlement
+browser-bound checkout initiation
+body-only one-time handoff authority
 revocation
-fixed-domain HTTPS deployment
+fixed-domain HTTPS
 exact revision identity
-no credential/authority in visible URL or retained evidence
+no credential/authority in visible URL or retained request evidence
 ```
 
-Not required for this gate:
+Deferred:
 
 ```text
-portable runtime
-portable Knowledge secrecy
-wallet/purchased platform credits
+portable runtime / portable Knowledge secrecy
+wallet / purchased platform credits
 creator-funded shared inference
-sponsored/hybrid payer routing
+sponsored / hybrid payer routing
 full subscription automation
 multi-worker BYOK credential sharing
 perfect DRM
 OpenAI Plugin delivery
 ```
 
-Those can re-enter as separate goals after the Hosted v1 proof.
+## Exact-head external reality gate
 
-## METEOR attack set for the current challenger
-
-Code/CI must reject or preserve safety under at least:
-
-- Creator Studio enabled without creator auth;
-- missing/unsafe creator password/session secret files;
-- active paid handoff without cookie/Stripe/webhook secrets;
-- missing/symlinked/world-readable/group-writable commercial env file;
-- product Package/Instructions/Knowledge permission widening;
-- Knowledge digest mismatch;
-- draft package pretending to be active/runnable;
-- active package silent overwrite;
-- second product corrupting first product state;
-- direct publish writing into deployed Git/runtime under systemd sandbox;
-- route surface/profile mismatch;
-- diagnostics or insecure HTTP re-enabled by operator env overrides;
-- secret values entering generated deployment artifacts;
-- browser handoff authority appearing in any generated handoff/activation URL;
-- activation via GET;
-- handoff-code replay after first consume;
-- stale/Quick-Tunnel Stripe webhook satisfying fixed-domain acceptance;
-- Payment Link with wrong package metadata, amount, currency, recurring mode, or completion redirect;
-- `_`/`-` compound Knowledge term failing component retrieval;
-- missing checkout `session_id` exposing raw framework error rather than fail-closed human UX.
-
-Existing Stripe replay, webhook idempotency, checkout binding, BYOK, entitlement/revocation, Knowledge authority, and Creator Studio tests remain in the regression surface.
-
-## External reality gate — second pass
-
-After the current branch CI is green, repeat on the controlled host with the **new exact head**:
+Code/CI success does not promote the old Oracle evidence to the new head. Before `HOSTED_V1_FIXED_DOMAIN_PASS`, redeploy the **exact latest PR #30 head** and re-run:
 
 ```text
-new exact branch revision deployed
+exact SHA checkout/deploy
 → renderer --creator-studio regenerated from that SHA
-→ systemd preflight PASS under service identity
+→ generated service has --no-access-log
+→ systemd handoff preflight PASS as service identity
 → fixed-domain HTTPS PASS
-→ production command includes --no-access-log
-→ external Stripe contract validator PASS
-→ creator login + existing package authority intact
+→ Stripe external acceptance PASS
+→ creator login
+→ existing package authority intact
 → product 1 unchanged
 → active slug overwrite refused
-→ buyer payment/entitlement on this exact revision
-→ no handoff authority in URL
-→ no handoff authority retained in journal
-→ queryless/body handoff succeeds on iPhone Safari
+→ buyer opens /a/{slug} and checkout starts through /api/buy/{slug}
+→ live Stripe payment/webhook entitlement
+→ valid Session without browser proof denied
+→ bound browser completion succeeds
+→ no handoff authority in visible URL/journal
+→ iPhone Safari body handoff
 → ephemeral BYOK
-→ Knowledge component query retrieves ORACLE fixture
-→ live provider response
+→ ORACLE component query retrieves PACKAGE_TEXT fixture
+→ bounded live provider response
 → revoke
-→ immediate 401
+→ same buyer immediate 401
 ```
 
-No old-revision evidence is silently promoted to certify the new head.
+Do not create an extra paid test transaction merely to prove a code condition that can be proven without money. Use the smallest bounded live payment needed for the final exact-head chain.
 
 ## Merge gate
 
-Stop before merge when all code-side conditions are true:
+Stop before merge only when:
 
 ```text
-latest branch CI green
-PR mergeable
-no unresolved composition conflict
-queryless/body handoff tests green
-external Stripe contract tests green
-compound Knowledge retrieval tests green
-existing commercial/Stripe/BYOK/Knowledge/Creator Studio tests green
-no surviving code-side release blocker inside frozen Hosted v1 scope
-latest exact revision still requires/has explicit real-host evidence
+latest exact branch CI green
+PR remains open + Draft + mergeable
+no unresolved review/composition blocker
+all code-side DA/counter-DA findings in frozen Hosted v1 scope are closed
+exact-head production evidence is either completed or explicitly the only remaining external gate
 ```
 
-Even after the fixed-domain gate passes, PR #30 remains Draft until the human explicitly decides to merge.
+PR #30 must **not** be merged automatically. A merge is an irreversible boundary for this `/goal` and remains a separate human decision.
