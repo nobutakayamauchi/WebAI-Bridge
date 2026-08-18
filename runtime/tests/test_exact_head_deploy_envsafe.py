@@ -61,15 +61,20 @@ def _write_candidate(tmp_path: Path) -> tuple[Path, Path]:
     manifest = tmp_path / "deployment-manifest.json"
     service.write_text(_service_text(), encoding="utf-8")
     manifest.write_text(
-        json.dumps({"environment_authority": "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1"}) + "\n",
+        json.dumps(
+            {
+                "environment_authority": "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1",
+                "runtime_policy": m.EXPECTED_RUNTIME_POLICY,
+            }
+        ) + "\n",
         encoding="utf-8",
     )
     return service, manifest
 
 
 def test_target_pin_is_exact_new_pr30_head_and_tree():
-    assert m.TARGET_SHA == "89e80913a613cb98f9af685eb15ca7ed68505b7c"
-    assert m.TARGET_TREE == "48ccfef494681f06bfe42e3686c9d083faeb087c"
+    assert m.TARGET_SHA == "fa95d97047b6e75550cea4a6d7fb669e215d7393"
+    assert m.TARGET_TREE == "18ba28507f9d70461769ef60ff9ab7624996e76d"
 
 
 def test_target_environment_authority_accepts_exact_final_unset_and_exec_rebind(tmp_path):
@@ -96,6 +101,32 @@ def test_target_environment_authority_rejects_envfile_override_of_revision_shape
     service.write_text(text, encoding="utf-8")
     with pytest.raises(GateError, match="ExecStartPre authority mismatch"):
         m._validate_target_environment_authority(FakeBase, service, manifest)
+
+
+def test_target_environment_authority_rejects_runtime_policy_manifest_drift(tmp_path):
+    service, manifest = _write_candidate(tmp_path)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["runtime_policy"]["handoff_ttl_seconds"] = 9999
+    manifest.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    with pytest.raises(GateError, match="runtime policy authority mismatch"):
+        m._validate_target_environment_authority(FakeBase, service, manifest)
+
+
+def test_fixed_runtime_policy_is_removed_from_envfile_authority_and_rebound():
+    fixed = m._fixed_runtime_environment(FakeBase)
+    assert fixed["WEB_AI_PRICING_FILE"] == f"{FakeBase.RELEASE}/runtime/pricing.json"
+    assert fixed["WEB_AI_REQUESTS_PER_MINUTE"] == "20"
+    assert fixed["WEB_AI_BYOK_SESSION_TTL_SECONDS"] == "900"
+    assert fixed["WEB_AI_BYOK_SESSION_MAX"] == "1000"
+    assert fixed["WEB_AI_HANDOFF_TTL_SECONDS"] == "600"
+    assert fixed["WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS"] == "31536000"
+    protected = set(m._protected_environment_names(FakeBase))
+    assert set(fixed).issubset(protected)
+    pre = m._expected_preflight(FakeBase)
+    start = m._expected_start(FakeBase)
+    for key, value in fixed.items():
+        assert f"{key}={value}" in pre
+        assert f"{key}={value}" in start
 
 
 def test_scoped_git_trust_is_preflight_only_and_target_start_stays_exact(tmp_path):
@@ -129,6 +160,7 @@ def test_candidate_preflight_preserves_final_unset_and_has_total_timeout(tmp_pat
     assert "HTTPS_PROXY" in body
     assert "SSL_CERT_FILE" in body
     assert "GIT_DIR" in body
+    assert "WEB_AI_REQUESTS_PER_MINUTE" in body
     assert "ExecStart=/usr/bin/env PATH=/usr/bin:/bin PYTHONNOUSERSITE=1" in body
     assert "uvicorn" not in body
 
@@ -173,6 +205,8 @@ def test_stripe_acceptance_is_bounded_and_does_not_inherit_proxy_tls_or_loader_c
         "SSL_CERT_FILE",
         "OPENSSL_CONF",
         "SSLKEYLOGFILE",
+        "WEB_AI_REQUESTS_PER_MINUTE",
+        "WEB_AI_BYOK_SESSION_TTL_SECONDS",
     ):
         assert name in unset.split("=", 1)[1].split()
     assert "WEB_AI_STRIPE_SECRET_KEY" not in unset
