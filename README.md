@@ -21,22 +21,76 @@ NO PAYER RESOLUTION -> NO BUDGET AUTHORIZATION -> NO MODEL EXECUTION
 ## Repository structure
 
 ```text
-creator-studio/   Thin smartphone package configuration/export surface
-runtime/          Hosted Web AI runtime + mobile chat + ledger + Studio validator
-cost-router/      Cost/payer boundary documentation and extraction target
+creator-studio/   Smartphone creator surface
+runtime/          Hosted runtime, buyer UI, auth, entitlement, Stripe handoff/webhook, Knowledge, ledger
+cost-router/      Cost/payer boundary and pricing logic
 package-schema/   Canonical AI Package contract
-docs/             Product, cost, distribution and /goal evidence
+deploy/           Dogfood and fixed-domain deployment tooling
+docs/             Product, security, distribution and /goal evidence
 ```
 
-## Current status
+## Current hosted state
 
-`DOGFOOD / NOT_PRODUCTION`
+`HOSTED V1 CANDIDATE / LIVE DOGFOOD PROVEN / FIXED-DOMAIN RELEASE EVIDENCE PENDING`
 
-The runtime has been extracted from the Limit Development dogfood episode. Creator Studio thin v0 is the current challenger: it removes hand-written package JSON by composing a mobile form with the existing runtime, canonical schema and pricing registry while remaining export-only.
+The current Hosted path has already passed real-device dogfood for the important commercial chain:
 
-The Studio is disabled by default and does not write live runtime configuration. See `docs/GOAL_CREATOR_STUDIO_V0.md`.
+```text
+Stripe payment
+→ durable webhook entitlement
+→ one-time browser handoff
+→ iPhone Safari
+→ ephemeral buyer BYOK
+→ server-owned PACKAGE_TEXT Knowledge
+→ provider response
+→ revocation
+```
 
-Live provider, mobile-device, deployment and commercial payment validation remain separate gates.
+Creator Studio now supports authenticated direct publish of a validated three-artifact bundle:
+
+```text
+Package JSON + Instructions + Knowledge
+→ authority-safe install
+→ explicit activation
+→ registry reload
+→ buyer URL
+```
+
+The creator surface is fail-closed behind creator-only authentication when exposed publicly. Active package authority cannot be silently overwritten by a later Studio publish.
+
+## What is still not claimed
+
+The repository does **not** yet claim generic production completion.
+
+Remaining external release evidence includes:
+
+- fixed public hostname/DNS;
+- stable HTTPS reverse proxy rather than Quick Tunnel dogfood;
+- exact deployed revision + systemd preflight on that host;
+- production secret-file permissions/logging review;
+- one complete Creator Studio direct-publish cycle on the fixed-domain host;
+- one buyer purchase/use/revoke cycle on that same deployed revision;
+- final iPhone/Safari acceptance after the fixed-domain deployment.
+
+Portable runtime, purchased platform credits/wallets, creator-funded shared inference, sponsored/hybrid payer modes, and OpenAI Plugin delivery are separate future scopes. They are not required to call the bounded Hosted/BYOK sale path usable.
+
+## Deployment profiles
+
+The deterministic renderer keeps two surfaces separate:
+
+```text
+buyer-only commercial host
+→ commercial:app
+→ Studio disabled
+
+creator-managed commercial host
+→ commercial_handoff:app
+→ creator-authenticated Studio/direct publish
+```
+
+Creator mode is opt-in. It does not place creator, Stripe, entitlement, or provider secret values in generated deployment artifacts.
+
+See `deploy/README.md` and the current `/goal` records under `docs/` for the exact external acceptance boundary.
 
 ## Origin / evidence
 
