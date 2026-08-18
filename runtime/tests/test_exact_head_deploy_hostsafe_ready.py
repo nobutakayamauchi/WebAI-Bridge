@@ -14,6 +14,8 @@ m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 
+SHA = "a" * 40
+
 
 class FakeGateError(RuntimeError):
     pass
@@ -27,8 +29,8 @@ def test_wait_tolerates_exec_window_then_requires_two_stable_samples(monkeypatch
     sequence = iter([
         FakeGateError("cwd mismatch: /"),
         FakeGateError("process has no DEPLOYED_REVISION identity"),
-        {"pid": 42, "cwd": "/release/runtime", "revision": "abc", "cmd": ["uvicorn", "app", "--no-access-log"]},
-        {"pid": 42, "cwd": "/release/runtime", "revision": "abc", "cmd": ["uvicorn", "app", "--no-access-log"]},
+        {"pid": 42, "cwd": "/release/runtime", "revision": SHA, "cmd": ["uvicorn", "app", "--no-access-log"]},
+        {"pid": 42, "cwd": "/release/runtime", "revision": SHA, "cmd": ["uvicorn", "app", "--no-access-log"]},
     ])
 
     def read(_base):
@@ -41,7 +43,7 @@ def test_wait_tolerates_exec_window_then_requires_two_stable_samples(monkeypatch
     result = m._wait_for_stable_identity(
         FakeBase,
         expected_cwd="/release/runtime",
-        expected_revision="abc",
+        expected_revision=SHA,
         required_cmd_tokens=("app", "--no-access-log"),
         timeout=0.5,
         poll=0.001,
@@ -54,15 +56,15 @@ def test_wait_tolerates_exec_window_then_requires_two_stable_samples(monkeypatch
 
 def test_wait_resets_stability_when_mainpid_changes(monkeypatch):
     sequence = iter([
-        {"pid": 10, "cwd": "/release/runtime", "revision": "abc", "cmd": []},
-        {"pid": 11, "cwd": "/release/runtime", "revision": "abc", "cmd": []},
-        {"pid": 11, "cwd": "/release/runtime", "revision": "abc", "cmd": []},
+        {"pid": 10, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
+        {"pid": 11, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
+        {"pid": 11, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
     ])
     monkeypatch.setattr(m, "_read_main_process_identity", lambda _base: next(sequence))
     result = m._wait_for_stable_identity(
         FakeBase,
         expected_cwd="/release/runtime",
-        expected_revision="abc",
+        expected_revision=SHA,
         timeout=0.5,
         poll=0.001,
         stable_samples=2,
@@ -70,6 +72,26 @@ def test_wait_resets_stability_when_mainpid_changes(monkeypatch):
     assert result["pid"] == 11
     assert result["attempts"] == 3
     assert result["stable_samples"] == 2
+
+
+def test_wait_enforces_pinned_mainpid_generation(monkeypatch):
+    sequence = iter([
+        {"pid": 41, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
+        {"pid": 42, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
+        {"pid": 42, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
+    ])
+    monkeypatch.setattr(m, "_read_main_process_identity", lambda _base: next(sequence))
+    result = m._wait_for_stable_identity(
+        FakeBase,
+        expected_cwd="/release/runtime",
+        expected_revision=SHA,
+        required_pid=42,
+        timeout=0.5,
+        poll=0.001,
+        stable_samples=2,
+    )
+    assert result["pid"] == 42
+    assert result["attempts"] == 3
 
 
 def test_wait_times_out_with_last_observed_reason(monkeypatch):
@@ -82,7 +104,7 @@ def test_wait_times_out_with_last_observed_reason(monkeypatch):
         m._wait_for_stable_identity(
             FakeBase,
             expected_cwd="/release/runtime",
-            expected_revision="abc",
+            expected_revision=SHA,
             timeout=0.01,
             poll=0.001,
             stable_samples=2,
@@ -93,17 +115,31 @@ def test_wait_never_accepts_missing_required_command_surface(monkeypatch):
     monkeypatch.setattr(
         m,
         "_read_main_process_identity",
-        lambda _base: {"pid": 42, "cwd": "/release/runtime", "revision": "abc", "cmd": ["uvicorn"]},
+        lambda _base: {"pid": 42, "cwd": "/release/runtime", "revision": SHA, "cmd": ["uvicorn"]},
     )
     with pytest.raises(FakeGateError, match="missing tokens"):
         m._wait_for_stable_identity(
             FakeBase,
             expected_cwd="/release/runtime",
-            expected_revision="abc",
+            expected_revision=SHA,
             required_cmd_tokens=("commercial_handoff:app", "--no-access-log"),
             timeout=0.01,
             poll=0.001,
             stable_samples=2,
+        )
+
+
+def test_wait_rejects_non_exact_expected_revision(monkeypatch):
+    monkeypatch.setattr(
+        m,
+        "_read_main_process_identity",
+        lambda _base: {"pid": 1, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
+    )
+    with pytest.raises(FakeGateError, match="40-hex"):
+        m._wait_for_stable_identity(
+            FakeBase,
+            expected_cwd="/release/runtime",
+            expected_revision="abc",
         )
 
 
@@ -120,7 +156,7 @@ def test_read_identity_rejects_mainpid_change_during_observation(monkeypatch):
         @staticmethod
         def process_revision(pid):
             assert pid == 41
-            return "abc"
+            return SHA
 
     monkeypatch.setattr(m.os, "readlink", lambda _path: "/release/runtime")
     monkeypatch.setattr(Path, "read_bytes", lambda _self: b"uvicorn\0app\0")
@@ -132,14 +168,53 @@ def test_policy_rejects_single_sample_configuration(monkeypatch):
     monkeypatch.setattr(
         m,
         "_read_main_process_identity",
-        lambda _base: {"pid": 1, "cwd": "/release/runtime", "revision": "abc", "cmd": []},
+        lambda _base: {"pid": 1, "cwd": "/release/runtime", "revision": SHA, "cmd": []},
     )
     with pytest.raises(FakeGateError, match="invalid readiness"):
         m._wait_for_stable_identity(
             FakeBase,
             expected_cwd="/release/runtime",
-            expected_revision="abc",
+            expected_revision=SHA,
             timeout=1,
             poll=0.1,
             stable_samples=1,
+        )
+
+
+def test_health_wait_tolerates_startup_failure_then_requires_two_successes():
+    sequence = iter([
+        FakeGateError("connection refused"),
+        {"status": 200, "body_status": "ok"},
+        {"status": 200, "body_status": "ok"},
+    ])
+
+    def probe():
+        item = next(sequence)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    result = m._wait_for_stable_health(
+        FakeBase,
+        probe,
+        timeout=0.5,
+        poll=0.001,
+        stable_samples=2,
+    )
+    assert result["status"] == 200
+    assert result["stable_samples"] == 2
+    assert result["health_attempts"] == 3
+
+
+def test_health_wait_times_out_with_last_reason():
+    def probe():
+        raise FakeGateError("connection refused")
+
+    with pytest.raises(FakeGateError, match="health did not stabilize.*connection refused"):
+        m._wait_for_stable_health(
+            FakeBase,
+            probe,
+            timeout=0.01,
+            poll=0.001,
+            stable_samples=2,
         )
