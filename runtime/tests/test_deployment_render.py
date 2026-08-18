@@ -31,6 +31,7 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
     unit = Path(written["webai-bridge.service"]).read_text(encoding="utf-8")
     assert "Environment=DEPLOYED_REVISION=" + ("a" * 40) in unit
     assert "Environment=WEB_AI_ROUTE_SURFACE=commercial:app" in unit
+    assert "Environment=WEB_AI_CONFIG_DIR=/opt/webai-bridge/runtime/apps" in unit
     assert "Environment=WEB_AI_STUDIO_ENABLED=0" in unit
     assert "Environment=WEB_AI_CREATOR_AUTH_ENABLED=0" in unit
     assert "Environment=WEB_AI_DIAGNOSTICS_ENABLED=0" in unit
@@ -43,10 +44,12 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
     assert "UMask=0077" in unit
 
 
-def test_creator_studio_renderer_uses_handoff_surface_and_locked_creator_auth(tmp_path):
+def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_and_locked_creator_auth(tmp_path):
     written = render.write_outputs(values(), tmp_path, creator_studio=True)
     unit = Path(written["webai-bridge.service"]).read_text(encoding="utf-8")
     assert "Environment=WEB_AI_ROUTE_SURFACE=commercial_handoff:app" in unit
+    assert "Environment=WEB_AI_CONFIG_DIR=/var/lib/webai-bridge/apps" in unit
+    assert "Environment=WEB_AI_CONFIG_DIR=/opt/webai-bridge/runtime/apps" not in unit
     assert "Environment=WEB_AI_STUDIO_ENABLED=1" in unit
     assert "Environment=WEB_AI_CREATOR_AUTH_ENABLED=1" in unit
     assert "Environment=WEB_AI_CREATOR_PASSWORD_FILE=/var/lib/webai-bridge/creator-password.secret" in unit
@@ -55,11 +58,15 @@ def test_creator_studio_renderer_uses_handoff_surface_and_locked_creator_auth(tm
     assert "ExecStartPre=/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/deployment_preflight_handoff.py" in unit
     assert "ExecStart=/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial_handoff:app" in unit
     assert "WEB_AI_ALLOW_INSECURE_HTTP=0" in unit
+    assert "ProtectSystem=strict" in unit
+    assert "ReadWritePaths=/var/lib/webai-bridge" in unit
 
     manifest = json.loads(Path(written["deployment-manifest.json"]).read_text(encoding="utf-8"))
     assert manifest["schema"] == "webai-deployment-v1"
     assert manifest["profile"] == "CREATOR_STUDIO_COMMERCIAL_V1"
     assert manifest["route_surface"] == "commercial_handoff:app"
+    assert manifest["config_dir"] == "/var/lib/webai-bridge/apps"
+    assert manifest["package_authority"] == "STATE_DIR"
     assert manifest["creator_studio_enabled"] is True
     assert manifest["creator_auth_required"] is True
     assert manifest["creator_auth_mode"] == "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1"
@@ -75,6 +82,8 @@ def test_renderer_keeps_state_outside_runtime_and_outputs_no_secrets(tmp_path):
     manifest = json.loads(Path(written["deployment-manifest.json"]).read_text(encoding="utf-8"))
     assert manifest["state_dir"] == "/var/lib/webai-bridge"
     assert manifest["runtime_dir"] == "/opt/webai-bridge/runtime"
+    assert manifest["config_dir"] == "/opt/webai-bridge/runtime/apps"
+    assert manifest["package_authority"] == "RUNTIME_DIR"
     assert manifest["secret_values_in_manifest"] is False
     unit = Path(written["webai-bridge.service"]).read_text(encoding="utf-8")
     assert "OPENAI_API_KEY" not in unit
