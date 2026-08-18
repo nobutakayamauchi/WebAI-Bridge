@@ -13,6 +13,14 @@ BASE_PATH = "deploy/exact_head_deploy.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
 OVERLAY_ID = "EXECSTARTPRE_SCOPED_GIT_SAFE_DIRECTORY_V2"
 RELEASE_ROOT = Path("/opt/webai-bridge-releases")
+RUNTIME_ENV_LOCKS = (
+    "LD_PRELOAD=",
+    "LD_AUDIT=",
+    "LD_LIBRARY_PATH=",
+    "PYTHONPATH=",
+    "PYTHONHOME=",
+    "PYTHONNOUSERSITE=1",
+)
 TRUST_ENV_UNSET = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -173,6 +181,13 @@ def _scope_preflight_git_trust(base, service: Path) -> str:
     matches = [index for index, line in enumerate(lines) if line.startswith("ExecStartPre=")]
     if len(matches) != 1:
         raise base.GateError(f"expected exactly one ExecStartPre, got {len(matches)}")
+    env_file_line = f"EnvironmentFile=-{base.ENV_FILE}"
+    env_matches = [index for index, line in enumerate(lines) if line == env_file_line]
+    if len(env_matches) != 1:
+        raise base.GateError(f"expected exactly one canonical EnvironmentFile, got {len(env_matches)}")
+    for lock in RUNTIME_ENV_LOCKS:
+        if f"Environment={lock}" in lines:
+            raise base.GateError(f"target-rendered service already carries runtime env lock: {lock}")
 
     index = matches[0]
     command = lines[index].split("=", 1)[1].strip()
@@ -203,6 +218,9 @@ def _scope_preflight_git_trust(base, service: Path) -> str:
     )
     expected_lines = list(lines)
     expected_lines[index] = "ExecStartPre=" + scoped
+    env_insert = env_matches[0] + 1
+    for offset, lock in enumerate(RUNTIME_ENV_LOCKS):
+        expected_lines.insert(env_insert + offset, f"Environment={lock}")
     expected_text = "\n".join(expected_lines) + "\n"
     service.write_text(expected_text, encoding="utf-8")
     if service.read_text(encoding="utf-8") != expected_text:
@@ -242,10 +260,11 @@ def _install_overlay(base, controller_revision: str) -> None:
             "target_rendered_service_sha256": raw_hash,
             "candidate_service_sha256": candidate_hash,
             "service_overlay": OVERLAY_ID,
-            "service_overlay_delta": "ONLY_EXECSTARTPRE",
+            "service_overlay_delta": "EXECSTARTPRE_PLUS_RUNTIME_ENV_LOCKS",
             "git_safe_directory": str(base.RELEASE),
             "git_trust_scope": "ExecStartPre only",
             "git_environment_sanitized": True,
+            "runtime_environment_locks": list(RUNTIME_ENV_LOCKS),
             "runtime_immutability": "ROOT_OWNED_NON_WRITABLE",
             "controller_revision_pinned": controller_revision,
         }
