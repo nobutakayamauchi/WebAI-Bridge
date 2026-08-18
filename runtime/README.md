@@ -1,6 +1,6 @@
 # Runtime
 
-State: `HOSTED_V1_CANDIDATE / LIVE_DOGFOOD_PROVEN / FIXED_DOMAIN_RELEASE_PENDING`
+State: `HOSTED_V1_CANDIDATE / FIXED_DOMAIN_REALITY_LOOP_2 / REVALIDATION_REQUIRED`
 
 This is the current hosted WebAI Bridge runtime. It serves activated AI Packages through smartphone URLs, keeps creator Instructions and hosted Knowledge server-side, separates access price from inference cost, and fails closed on package/payment states it cannot enforce.
 
@@ -68,20 +68,21 @@ BUY_ONCE
 
 The code also retains bounded subscription/manual entitlement support, but Creator Studio direct publish v1 intentionally accepts BUY_ONCE only.
 
-The real-device dogfood path has already demonstrated:
+The fixed-domain Oracle/iPhone acceptance run on revision `9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1` demonstrated the core real chain:
 
 ```text
 live Stripe payment
-→ webhook fulfillment
-→ browser handoff
-→ iPhone Safari
+→ fixed-domain webhook fulfillment
+→ durable entitlement
+→ iPhone Safari buyer handoff
 → ephemeral BYOK
 → PACKAGE_TEXT Knowledge
 → live provider response
 → revocation
+→ same buyer immediately denied with 401
 ```
 
-Fixed-domain production evidence remains separate from that dogfood proof.
+That run also found production-only weaknesses. The current branch contains follow-up repairs, so the old live evidence does **not** certify the newer branch head. Exact-revision revalidation is required before a fixed-domain PASS claim.
 
 ## Creator Studio
 
@@ -128,14 +129,48 @@ The browser receives a signed Secure/HttpOnly creator session cookie. Creator cr
 
 The commercial gateway supports:
 
-- exact Stripe Payment Link/package/price/currency checks on checkout handoff;
+- exact Stripe Payment Link/package/price/currency checks on checkout fulfillment;
 - persistent single-claim Checkout Session authority;
 - durable Stripe webhook fulfillment so entitlement does not depend on a surviving redirect;
-- short-lived one-time cross-browser handoff tickets;
+- short-lived one-time browser handoff codes;
 - signed buyer cookies whose authority is rechecked against the entitlement database;
 - revocation that immediately invalidates an existing buyer session.
 
+### Browser handoff authority rule
+
+A real fixed-domain run found that the earlier implementation carried `handoff_...` authority in query strings. That made a one-time authority value visible in the address bar and retainable by access logs.
+
+The current challenger therefore uses:
+
+```text
+Stripe completion session_id
+→ server verifies paid Checkout Session
+→ server issues hashed one-time handoff code
+→ same-browser activation: hidden POST body
+OR
+→ cross-browser transfer: user copies one-time code to a clean /checkout/handoff/{slug} page
+→ POST /checkout/activate/{slug}
+→ entitlement cookie
+```
+
+The handoff code is never embedded in the handoff/activation URL. Production rendering also disables Uvicorn access logs as defense in depth against retaining query-bearing request targets. Completion pages are `no-store` and scrub the Checkout `session_id` from the visible address bar after server verification.
+
 For the production-style `commercial_handoff` surface with active paid packages, startup preflight requires the entitlement-cookie secret, Stripe server/restricted key, and Stripe webhook secret to be configured before the process is allowed to serve.
+
+### External Stripe deployment contract
+
+Local startup preflight proves local secret/config safety; it cannot prove that Stripe's remote objects still point at the intended production host.
+
+Run `stripe_external_acceptance.py` as a separate external gate to validate live Payment Link and webhook bindings. It checks:
+
+- active/live Payment Link;
+- package metadata binding (`webai_package_id`, `BUY_ONCE`);
+- configured amount/currency/one-time price;
+- exact fixed-domain completion redirect containing `{CHECKOUT_SESSION_ID}`;
+- exact fixed-domain webhook URL;
+- required Checkout fulfillment events.
+
+This validator is intentionally **not** an `ExecStartPre` dependency: ordinary service restart must not fail merely because Stripe's API is temporarily unavailable.
 
 ## BYOK
 
@@ -152,7 +187,10 @@ Current first-class hosted Knowledge is `PACKAGE_TEXT`:
 - canonical `{slug}.knowledge.md` server artifact;
 - SHA-256 bound from Package JSON;
 - bounded local lexical retrieval including Japanese/CJK handling;
-- retrieved text is treated as untrusted reference context rather than creator/system instruction authority.
+- ASCII `_`/`-` compounds indexed as both the full compound and component terms;
+- retrieved text treated as untrusted reference context rather than creator/system instruction authority.
+
+The component indexing was added after fixed-domain acceptance demonstrated that `ORACLE` could not retrieve a fact stored only as `ORACLE_FIXED_DOMAIN_...` when the compound was treated as one opaque token.
 
 Legacy/provider vector-store binding remains a separate supported shape where configured. Portable Knowledge packaging is not implemented.
 
@@ -196,7 +234,7 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-CI includes commercial checkout/webhook/handoff, entitlement, ephemeral BYOK, Knowledge, Creator Studio, direct publish, package authority, deployment renderer/preflight, and end-to-end regression coverage.
+CI includes commercial checkout/webhook/handoff, entitlement, ephemeral BYOK, Knowledge, Creator Studio, direct publish, package authority, deployment renderer/preflight, external Stripe contract validation, and end-to-end regression coverage.
 
 ## Current non-goals / remaining limits
 
@@ -212,4 +250,4 @@ Not required for the bounded Hosted/BYOK v1 release:
 - perfect DRM;
 - OpenAI Plugin delivery.
 
-A generic production claim is still withheld until the fixed-domain HTTPS deployment, exact-revision preflight, one real Creator Studio direct-publish cycle, one buyer purchase/use/revoke cycle, and final iPhone/Safari acceptance are evidenced on the deployed revision.
+A generic production claim remains withheld until the **latest** exact branch revision is redeployed and the fixed-domain HTTPS, Creator Studio second-product, live Stripe remote contract, buyer purchase/handoff/BYOK/Knowledge, no-authority-in-URL/log evidence, and revoke/401 boundaries are revalidated on that same revision.
