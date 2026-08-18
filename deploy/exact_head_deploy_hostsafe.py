@@ -94,9 +94,18 @@ def _check_root_owned_path(base, path: Path, *, label: str) -> None:
         raise base.GateError(f"{label} must not be group/world writable: {path}")
 
 
-def _check_root_owned_tree(base, root: Path, *, label: str, skip: set[str] | None = None) -> None:
+def _check_root_owned_tree(
+    base,
+    root: Path,
+    *,
+    label: str,
+    skip: set[str] | None = None,
+    reject_symlinks: bool = False,
+) -> None:
     skip = set(skip or ())
     _check_root_owned_path(base, root, label=label)
+    if reject_symlinks and root.is_symlink():
+        raise base.GateError(f"{label} must not be a symlink: {root}")
     for current, child_dirs, files in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
         rel_root = current_path.relative_to(root).as_posix()
@@ -110,6 +119,8 @@ def _check_root_owned_tree(base, root: Path, *, label: str, skip: set[str] | Non
                 continue
             _check_root_owned_path(base, path, label=label)
             if path.is_symlink():
+                if reject_symlinks:
+                    raise base.GateError(f"{label} must not contain symlinks: {path}")
                 child_dirs.remove(name)
         for name in files:
             path = current_path / name
@@ -117,6 +128,8 @@ def _check_root_owned_tree(base, root: Path, *, label: str, skip: set[str] | Non
             if rel in skip:
                 continue
             _check_root_owned_path(base, path, label=label)
+            if reject_symlinks and path.is_symlink():
+                raise base.GateError(f"{label} must not contain symlinks: {path}")
 
 
 def _verify_runtime_immutability(base) -> None:
@@ -131,6 +144,7 @@ def _verify_runtime_immutability(base) -> None:
         base.RELEASE,
         label="exact release source",
         skip={"runtime/.venv"},
+        reject_symlinks=True,
     )
     _check_root_owned_path(base, base.VENV.parent, label="venv root")
     _check_root_owned_tree(base, base.VENV, label="exact release venv")
