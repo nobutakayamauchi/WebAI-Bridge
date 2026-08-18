@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import importlib
 import json
 import os
@@ -90,6 +91,12 @@ def _fake_payment_link() -> dict:
         "url": PAYMENT_LINK_URL,
         "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"},
     }
+
+
+def _extract_transfer_code(page: str) -> str:
+    match = re.search(r"<code>(handoff_[^<]+)</code>", page)
+    assert match is not None
+    return html.unescape(match.group(1))
 
 
 def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp_path: Path, monkeypatch) -> None:
@@ -194,26 +201,27 @@ def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp
     assert active["access"]["commercial_enforcement"] == "ENTITLEMENT_ENFORCED"
 
     # 4) SALE / CHECKOUT -> a paid Checkout Session creates buyer entitlement,
-    # but only the claiming browser receives authority.
+    # but only the claiming browser receives authority. Handoff authority is
+    # transferred in a POST body, never a query string.
     monkeypatch.setattr(gateway.base, "retrieve_checkout_session", lambda **kwargs: _fake_checkout_session())
     monkeypatch.setattr(gateway.base, "retrieve_payment_link", lambda **kwargs: _fake_payment_link())
 
     payment_browser = TestClient(gateway.app)
     completed = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
-    assert completed.status_code == 303, completed.text
-    handoff_url = completed.headers["location"]
-    assert handoff_url.startswith(f"/checkout/handoff/{SLUG}?ticket=handoff_")
+    assert completed.status_code == 200, completed.text
+    assert f"/checkout/handoff/{SLUG}?ticket=" not in completed.text
+    transfer_code = _extract_transfer_code(completed.text)
     assert payment_browser.get(f"/apps/{SLUG}/public-config").status_code == 401
 
     buyer = TestClient(gateway.app)
-    landing = buyer.get(handoff_url)
+    landing = buyer.get(f"/checkout/handoff/{SLUG}")
     assert landing.status_code == 200
-    match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
-    assert match is not None
-    activate_url = match.group(1).replace("&amp;", "&")
-    browser_activation = buyer.post(activate_url, follow_redirects=False)
+    assert transfer_code not in landing.text
+    activate_url = f"/checkout/activate/{SLUG}"
+    browser_activation = buyer.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False)
     assert browser_activation.status_code == 303
     assert browser_activation.headers["location"] == f"/a/{SLUG}"
+    assert "ticket=" not in browser_activation.headers["location"]
     assert buyer.get(f"/apps/{SLUG}/public-config").status_code == 200
 
     # 5) BUYER BYOK + KNOWLEDGE -> provider receives retrieved Knowledge as
