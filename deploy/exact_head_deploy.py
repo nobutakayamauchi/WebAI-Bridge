@@ -231,6 +231,8 @@ def render() -> tuple[Path, Path, Path]:
         f"Environment=WEB_AI_CONFIG_DIR={STATE}/apps",
         "Environment=WEB_AI_ROUTE_SURFACE=commercial_handoff:app",
         f"EnvironmentFile=-{ENV_FILE}",
+        "User=webai",
+        "Group=webai",
         "ProtectSystem=strict",
         f"ReadWritePaths={STATE}",
         "--no-access-log",
@@ -364,11 +366,27 @@ def running_identity() -> dict:
 
 
 def https_health() -> dict:
-    with urllib.request.urlopen(f"https://{DOMAIN}/health", timeout=15) as r:
+    url = f"https://{DOMAIN}/health"
+    with urllib.request.urlopen(url, timeout=15) as r:
+        final_url = r.geturl()
+        if final_url != url:
+            raise GateError(f"HTTPS health redirected: {final_url}")
         if r.status != 200:
             raise GateError(f"HTTPS health={r.status}")
-        r.read(4096)
-    return {"url": f"https://{DOMAIN}/health", "status": 200}
+        raw = r.read(4096)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise GateError(f"HTTPS health returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        raise GateError("HTTPS health body does not prove application readiness")
+    return {
+        "url": url,
+        "status": 200,
+        "body_status": "ok",
+        "app_count": payload.get("app_count"),
+        "pricing_version": payload.get("pricing_version"),
+    }
 
 
 def stripe_acceptance() -> None:
