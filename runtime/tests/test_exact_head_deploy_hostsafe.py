@@ -33,6 +33,7 @@ def fake_base(release: Path):
         TARGET_SHA=target,
         GateError=GateError,
         sha256=sha256,
+        ENV_FILE=Path("/etc/webai-bridge/webai-bridge.env"),
     )
 
 
@@ -43,6 +44,7 @@ def service_text(release: Path) -> str:
         "[Service]",
         "User=webai",
         f"WorkingDirectory={release}/runtime",
+        "EnvironmentFile=-/etc/webai-bridge/webai-bridge.env",
         f"ExecStartPre={release}/runtime/.venv/bin/python {release}/runtime/deployment_preflight_handoff.py",
         f"ExecStart={release}/runtime/.venv/bin/uvicorn commercial_handoff:app --no-access-log",
         "ProtectSystem=strict",
@@ -80,6 +82,8 @@ def test_scoped_git_trust_wraps_only_exact_execstartpre_and_sanitizes_env(tmp_pa
     ) in text
     assert original_execstart in text
     assert "Environment=GIT_CONFIG" not in text
+    for lock in m.RUNTIME_ENV_LOCKS:
+        assert f"Environment={lock}" in text
     assert base.sha256(service) != raw_hash
 
 
@@ -140,6 +144,19 @@ def test_scoped_git_trust_rejects_release_not_matching_target(tmp_path: Path):
     base.TARGET_SHA = "a" * 40
     with pytest.raises(GateError, match="does not match pinned target"):
         m._scope_preflight_git_trust(base, service)
+
+
+def test_scoped_git_trust_rejects_preexisting_runtime_env_lock(tmp_path: Path):
+    release = Path("/opt/webai-bridge-releases") / ("a" * 40)
+    service = tmp_path / "webai-bridge.service"
+    text = service_text(release).replace(
+        "EnvironmentFile=-/etc/webai-bridge/webai-bridge.env",
+        "EnvironmentFile=-/etc/webai-bridge/webai-bridge.env\nEnvironment=LD_PRELOAD=",
+        1,
+    )
+    service.write_text(text, encoding="utf-8")
+    with pytest.raises(GateError, match="already carries runtime env lock"):
+        m._scope_preflight_git_trust(fake_base(release), service)
 
 
 def test_controller_revision_requires_exact_env_and_same_head(monkeypatch):
@@ -241,6 +258,7 @@ def test_prepare_overlay_requires_controller_and_hash_consistency(monkeypatch, t
         CONTROL=tmp_path / "control",
         GateError=GateError,
         sha256=sha256,
+        ENV_FILE=Path("/etc/webai-bridge/webai-bridge.env"),
     )
     base.VENV.mkdir()
     base.CONTROL.mkdir()
@@ -266,8 +284,9 @@ def test_prepare_overlay_requires_controller_and_hash_consistency(monkeypatch, t
     prepared = base.prepare()
 
     assert prepared["controller_revision_pinned"] == controller_revision
-    assert prepared["service_overlay_delta"] == "ONLY_EXECSTARTPRE"
+    assert prepared["service_overlay_delta"] == "EXECSTARTPRE_PLUS_RUNTIME_ENV_LOCKS"
     assert prepared["git_environment_sanitized"] is True
+    assert prepared["runtime_environment_locks"] == list(m.RUNTIME_ENV_LOCKS)
     assert prepared["target_rendered_service_sha256"] != prepared["candidate_service_sha256"]
     assert prepared["service_sha256"] == prepared["candidate_service_sha256"]
 
