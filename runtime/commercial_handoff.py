@@ -4,6 +4,7 @@ from __future__ import annotations
 # This surface owns the Knowledge-aware Creator Studio and protects it with
 # fail-closed creator authentication whenever Studio is publicly enabled.
 import commercial as base
+from checkout_browser_binding import install_checkout_browser_binding
 from creator_auth import install_creator_auth
 from knowledge_artifact import validate_package_text_artifact
 from knowledge_studio import install_knowledge_studio_routes
@@ -35,6 +36,10 @@ for _config in base.core.registry.apps.values():
             )
 
 base.core.chat = _knowledge_chat
+# Stripe completion must prove possession of the initiating browser binding before
+# it is allowed to mint the one-time body handoff code. Install this before the
+# Studio/auth wrappers so every Creator Studio production route surface inherits it.
+install_checkout_browser_binding(base)
 install_knowledge_studio_routes(base)
 CREATOR_AUTH = install_creator_auth(base)
 app = base.app
