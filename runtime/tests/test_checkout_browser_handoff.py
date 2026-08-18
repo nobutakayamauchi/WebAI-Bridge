@@ -103,7 +103,9 @@ def test_checkout_can_transfer_once_from_embedded_browser_to_safari_without_auth
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
 
     assert embedded.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False).status_code == 409
-    assert embedded.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 409
+    # Completion consumes and clears the initiating-browser proof, so even replaying
+    # the same valid Stripe session id is denied before checkout-claim lookup.
+    assert embedded.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 403
     assert module.base.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
 
