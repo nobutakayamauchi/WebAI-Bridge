@@ -15,15 +15,21 @@ The exact release is intentionally root-owned while the runtime preflight execut
 
 Do not `chown` the release to `webai` and do not add a host-global `safe.directory` exception.
 
-`deploy/exact_head_deploy_hostsafe.py` loads the canonical deploy capsule from the committed controller Git object and overlays only the generated service's `ExecStartPre` command with command-scoped Git configuration:
+`deploy/exact_head_deploy_hostsafe.py` now requires one explicitly pinned controller revision and loads the base deploy capsule from that exact revision rather than re-reading mutable `HEAD`.
 
-```text
-GIT_CONFIG_COUNT=1
-GIT_CONFIG_KEY_0=safe.directory
-GIT_CONFIG_VALUE_0=<exact release path>
-```
+The overlay is accepted only when the generated `ExecStartPre` exactly equals the pinned release's expected `deployment_preflight_handoff.py` command. That command is wrapped with a command-local environment that:
 
-The long-running WebAI `ExecStart` does not inherit this Git trust configuration, the exact target source remains root-owned, and the evidence records both the raw target-rendered service hash and the overlaid candidate service hash.
+- removes Git repository/config redirect variables such as `GIT_DIR`, `GIT_WORK_TREE`, and inherited Git config paths;
+- fixes `PATH=/usr/bin:/bin`;
+- clears inherited `PYTHONPATH` and `PYTHONHOME`;
+- disables system/global Git config for the check;
+- sets exactly one protected `safe.directory` entry for the exact release path.
+
+The long-running WebAI `ExecStart` remains unchanged and receives no Git trust overlay.
+
+The prepare gate also requires the release source, exact venv, controller root, and controller Git metadata to remain root-owned and non-group/world-writable. The exact release source rejects symlinks except the separately verified generated `runtime/.venv` link; the pinned target tree contains no tracked symlinks.
+
+Evidence records the raw target-rendered service hash separately from the candidate overlay service hash and labels the permitted delta as `ONLY_EXECSTARTPRE`.
 
 ## Non-claims
 
