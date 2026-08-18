@@ -4,7 +4,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -122,6 +122,39 @@ def test_prepare_root_gate_rejects_existing_release_symlink_before_dependency_ex
     assert "tree:control" in calls
 
 
+def test_prepare_precheck_runs_before_original_prepare(monkeypatch):
+    state = {"prechecked": False, "prepare_called": False}
+
+    class Base:
+        GateError = GateError
+        render = staticmethod(lambda: None)
+        candidate_preflight = staticmethod(lambda service: None)
+        stripe_acceptance = staticmethod(lambda: None)
+        evidence = staticmethod(lambda payload: Path("/tmp/old-evidence"))
+        apply = staticmethod(lambda approval: approval)
+
+        @staticmethod
+        def prepare():
+            assert state["prechecked"] is True
+            state["prepare_called"] = True
+            return {}
+
+    class Host:
+        @staticmethod
+        def _require_controller_revision(base, revision):
+            return None
+
+    monkeypatch.setattr(
+        m,
+        "_verify_prepare_roots",
+        lambda base, host, revision: state.__setitem__("prechecked", True),
+    )
+    m._install_envsafe_overlay(Base, Host, "e" * 40)
+    with pytest.raises(GateError, match="missing effective environment service identity"):
+        Base.prepare()
+    assert state == {"prechecked": True, "prepare_called": True}
+
+
 def test_canonical_envsafe_overlay_blocks_production_apply():
     class Base:
         GateError = GateError
@@ -138,6 +171,31 @@ def test_canonical_envsafe_overlay_blocks_production_apply():
     m._install_envsafe_overlay(Base, Host, "e" * 40)
     with pytest.raises(GateError, match="production apply is intentionally disabled"):
         Base.apply(m.TARGET_SHA)
+
+
+def test_module_global_apply_lookup_is_replaced_by_fail_closed_gate():
+    base = ModuleType("fake_envsafe_base")
+    base.GateError = GateError
+    base.render = lambda: None
+    base.prepare = lambda: {}
+    base.candidate_preflight = lambda service: None
+    base.stripe_acceptance = lambda: None
+    base.evidence = lambda payload: Path("/tmp/old-evidence")
+    exec(
+        "def apply(approval):\n"
+        "    return approval\n\n"
+        "def main_apply():\n"
+        "    return apply('approved')\n",
+        base.__dict__,
+    )
+
+    class Host:
+        pass
+
+    assert base.main_apply() == "approved"
+    m._install_envsafe_overlay(base, Host, "f" * 40)
+    with pytest.raises(GateError, match="production apply is intentionally disabled"):
+        base.main_apply()
 
 
 def test_prepare_evidence_declares_apply_disabled_in_overlay_contract():
