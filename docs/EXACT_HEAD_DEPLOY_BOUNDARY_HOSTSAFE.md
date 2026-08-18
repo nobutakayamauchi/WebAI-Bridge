@@ -2,6 +2,10 @@
 
 The exact target source remains immutable and root-owned.
 
-The runtime identity `webai` receives Git trust only for the exact release path and only for the preflight command that compares `DEPLOYED_REVISION` with local Git HEAD. The long-running application process receives no Git trust environment, no global `safe.directory` entry is created, and source ownership is not transferred to the runtime user.
+The runtime identity `webai` receives Git trust only for the exact release path and only for the exact expected `deployment_preflight_handoff.py` command that compares `DEPLOYED_REVISION` with local Git HEAD. Before that command runs, Git repository/config redirect variables are removed, `PATH` is fixed to trusted system binaries, inherited Python path/home injection is cleared, and system/global Git config is disabled. The long-running application process receives no Git trust overlay.
 
-The host-safe entrypoint must itself be executed from the committed controller Git object so dirty working-tree code is never trusted before the canonical controller cleanliness gate.
+No global `safe.directory` entry is created, source ownership is not transferred to the runtime user, and release/venv/controller Git metadata must remain root-owned and non-group/world-writable. The exact release source rejects symlinks except the separately verified generated `runtime/.venv` link.
+
+The host-safe entrypoint must itself be executed from one explicitly pinned controller Git revision. The shell reads the wrapper from that revision, the wrapper loads the base deploy capsule from the same revision, and controller revision movement during prepare fails closed.
+
+Evidence distinguishes the raw target-rendered service hash from the candidate overlay service hash and permits only the explicit `ExecStartPre` overlay delta.
