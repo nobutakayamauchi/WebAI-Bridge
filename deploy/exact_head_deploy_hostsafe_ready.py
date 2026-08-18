@@ -15,6 +15,7 @@ READINESS_TIMEOUT_SECONDS = 15.0
 READINESS_POLL_SECONDS = 0.25
 READINESS_STABLE_SAMPLES = 2
 HEALTH_POLL_SECONDS = 0.5
+HEALTH_ATTEMPT_TIMEOUT_SECONDS = 5.0
 
 
 def _run_git(*args: str) -> str:
@@ -65,24 +66,28 @@ def _load_committed_inner(controller_revision: str):
     return module
 
 
-def _read_main_process_identity(base) -> dict:
-    active = base.run(
+def _read_systemd_value(base, property_name: str) -> str:
+    return base.run(
         "systemctl",
         "show",
         "webai-bridge.service",
-        "--property=ActiveState",
+        f"--property={property_name}",
         "--value",
     ).strip()
+
+
+def _read_main_process_identity(base) -> dict:
+    active = _read_systemd_value(base, "ActiveState")
     if active != "active":
         raise base.GateError(f"service ActiveState is not active: {active or '<empty>'}")
 
-    pid_before = base.run(
-        "systemctl",
-        "show",
-        "webai-bridge.service",
-        "--property=MainPID",
-        "--value",
-    ).strip()
+    invocation_before = _read_systemd_value(base, "InvocationID").lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", invocation_before):
+        raise base.GateError(
+            f"service has no exact systemd InvocationID: {invocation_before or '<empty>'}"
+        )
+
+    pid_before = _read_systemd_value(base, "MainPID")
     if not pid_before.isdigit() or int(pid_before) <= 0:
         raise base.GateError(f"service has no live MainPID: {pid_before or '<empty>'}")
     pid = int(pid_before)
@@ -95,18 +100,19 @@ def _read_main_process_identity(base) -> dict:
         raise base.GateError(f"process {pid} identity is not readable yet: {exc}") from exc
 
     cmd = [x.decode(errors="replace") for x in raw_cmd.split(b"\0") if x]
-    pid_after = base.run(
-        "systemctl",
-        "show",
-        "webai-bridge.service",
-        "--property=MainPID",
-        "--value",
-    ).strip()
+    pid_after = _read_systemd_value(base, "MainPID")
+    invocation_after = _read_systemd_value(base, "InvocationID").lower()
     if pid_after != pid_before:
         raise base.GateError(f"MainPID changed during identity observation: {pid_before}->{pid_after}")
+    if invocation_after != invocation_before:
+        raise base.GateError(
+            f"systemd InvocationID changed during identity observation: "
+            f"{invocation_before}->{invocation_after}"
+        )
 
     return {
         "pid": pid,
+        "invocation_id": invocation_before,
         "cwd": str(cwd),
         "revision": revision,
         "cmd": cmd,
@@ -120,6 +126,7 @@ def _wait_for_stable_identity(
     expected_revision: str,
     required_cmd_tokens: tuple[str, ...] = (),
     required_pid: int | None = None,
+    required_invocation_id: str | None = None,
     timeout: float = READINESS_TIMEOUT_SECONDS,
     poll: float = READINESS_POLL_SECONDS,
     stable_samples: int = READINESS_STABLE_SAMPLES,
@@ -132,10 +139,14 @@ def _wait_for_stable_identity(
         raise base.GateError("expected readiness revision must be an exact 40-hex SHA")
     if required_pid is not None and required_pid <= 0:
         raise base.GateError("required readiness MainPID must be positive")
+    if required_invocation_id is not None:
+        required_invocation_id = required_invocation_id.lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", required_invocation_id):
+            raise base.GateError("required readiness InvocationID must be exact 32-hex")
 
     expected_cwd_resolved = str(Path(expected_cwd).resolve())
     deadline = time.monotonic() + timeout
-    stable_pid: int | None = None
+    stable_generation: tuple[int, str] | None = None
     stable_count = 0
     attempts = 0
     last_reason = "no observation"
@@ -147,6 +158,14 @@ def _wait_for_stable_identity(
             if required_pid is not None and observed["pid"] != required_pid:
                 raise base.GateError(
                     f"MainPID generation changed: {observed['pid']} != required {required_pid}"
+                )
+            if (
+                required_invocation_id is not None
+                and observed["invocation_id"] != required_invocation_id
+            ):
+                raise base.GateError(
+                    "systemd invocation generation changed: "
+                    f"{observed['invocation_id']} != required {required_invocation_id}"
                 )
             if observed["cwd"] != expected_cwd_resolved:
                 raise base.GateError(
@@ -160,10 +179,11 @@ def _wait_for_stable_identity(
             if missing:
                 raise base.GateError(f"command surface missing tokens: {missing}")
 
-            if observed["pid"] == stable_pid:
+            generation = (observed["pid"], observed["invocation_id"])
+            if generation == stable_generation:
                 stable_count += 1
             else:
-                stable_pid = observed["pid"]
+                stable_generation = generation
                 stable_count = 1
 
             if stable_count >= stable_samples:
@@ -173,9 +193,12 @@ def _wait_for_stable_identity(
                     "attempts": attempts,
                     "readiness_timeout_seconds": timeout,
                 }
-            last_reason = f"identity matched but is not stable yet for pid {observed['pid']}"
+            last_reason = (
+                "identity matched but is not stable yet for "
+                f"pid {observed['pid']} invocation {observed['invocation_id']}"
+            )
         except Exception as exc:
-            stable_pid = None
+            stable_generation = None
             stable_count = 0
             last_reason = str(exc)
 
@@ -188,6 +211,32 @@ def _wait_for_stable_identity(
         time.sleep(min(poll, max(0.0, deadline - now)))
 
 
+def _probe_exact_health(base, attempt_timeout: float) -> dict:
+    if attempt_timeout <= 0:
+        raise base.GateError("HTTPS health attempt timeout must be positive")
+    url = f"https://{base.DOMAIN}/health"
+    with base.urllib.request.urlopen(url, timeout=attempt_timeout) as response:
+        final_url = response.geturl()
+        if final_url != url:
+            raise base.GateError(f"HTTPS health redirected: {final_url}")
+        if response.status != 200:
+            raise base.GateError(f"HTTPS health={response.status}")
+        raw = response.read(4096)
+    try:
+        payload = base.json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise base.GateError(f"HTTPS health returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        raise base.GateError("HTTPS health body does not prove application readiness")
+    return {
+        "url": url,
+        "status": 200,
+        "body_status": "ok",
+        "app_count": payload.get("app_count"),
+        "pricing_version": payload.get("pricing_version"),
+    }
+
+
 def _wait_for_stable_health(
     base,
     health_probe,
@@ -195,8 +244,9 @@ def _wait_for_stable_health(
     timeout: float = READINESS_TIMEOUT_SECONDS,
     poll: float = HEALTH_POLL_SECONDS,
     stable_samples: int = READINESS_STABLE_SAMPLES,
+    attempt_timeout: float = HEALTH_ATTEMPT_TIMEOUT_SECONDS,
 ) -> dict:
-    if timeout <= 0 or poll <= 0 or stable_samples < 2:
+    if timeout <= 0 or poll <= 0 or stable_samples < 2 or attempt_timeout <= 0:
         raise base.GateError("invalid HTTPS readiness stabilization policy")
     deadline = time.monotonic() + timeout
     stable_count = 0
@@ -205,9 +255,15 @@ def _wait_for_stable_health(
     latest: dict | None = None
 
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise base.GateError(
+                f"HTTPS application health did not stabilize within {timeout:.1f}s after {attempts} attempts; "
+                f"last={last_reason}"
+            )
         attempts += 1
         try:
-            latest = health_probe()
+            latest = health_probe(min(attempt_timeout, remaining))
             stable_count += 1
             if stable_count >= stable_samples:
                 return {
@@ -215,6 +271,7 @@ def _wait_for_stable_health(
                     "stable_samples": stable_count,
                     "health_attempts": attempts,
                     "readiness_timeout_seconds": timeout,
+                    "max_attempt_timeout_seconds": attempt_timeout,
                 }
             last_reason = "application health matched but is not stable yet"
         except Exception as exc:
@@ -233,29 +290,55 @@ def _wait_for_stable_health(
 
 def _install_readiness_overlay(base) -> None:
     original_prepare = base.prepare
-    original_health = base.https_health
     original_stripe_acceptance = base.stripe_acceptance
-    state: dict[str, int] = {}
+    original_evidence = base.evidence
+    state: dict[str, object] = {}
+
+    def raw_health_probe(attempt_timeout: float) -> dict:
+        return _probe_exact_health(base, attempt_timeout)
 
     def prepare_with_readiness_policy():
         prepared = original_prepare()
         return {
             **prepared,
             "runtime_identity_readiness": {
-                "mode": "BOUNDED_STABLE_MAINPID_POLL_V2",
+                "mode": "BOUNDED_STABLE_SYSTEMD_GENERATION_POLL_V3",
                 "timeout_seconds": READINESS_TIMEOUT_SECONDS,
                 "poll_seconds": READINESS_POLL_SECONDS,
                 "stable_samples": READINESS_STABLE_SAMPLES,
                 "pid_rechecked_during_sample": True,
-                "same_pid_through_health_and_acceptance": True,
+                "invocation_id_rechecked_during_sample": True,
+                "generation_identity": "InvocationID+MainPID",
+                "same_generation_through_health_and_acceptance": True,
             },
             "https_readiness": {
-                "mode": "BOUNDED_APPLICATION_HEALTH_POLL_V1",
+                "mode": "STRICT_BOUNDED_APPLICATION_HEALTH_POLL_V2",
                 "timeout_seconds": READINESS_TIMEOUT_SECONDS,
                 "poll_seconds": HEALTH_POLL_SECONDS,
                 "stable_samples": READINESS_STABLE_SAMPLES,
+                "max_attempt_timeout_seconds": HEALTH_ATTEMPT_TIMEOUT_SECONDS,
+                "rollback_health_required": True,
+                "post_stripe_health_required": True,
             },
         }
+
+    def target_generation() -> tuple[int, str]:
+        target_pid = state.get("target_pid")
+        target_invocation_id = state.get("target_invocation_id")
+        if not isinstance(target_pid, int) or not isinstance(target_invocation_id, str):
+            raise base.GateError("target systemd generation was not pinned")
+        return target_pid, target_invocation_id
+
+    def verify_target_generation() -> dict:
+        target_pid, target_invocation_id = target_generation()
+        return _wait_for_stable_identity(
+            base,
+            expected_cwd=str(base.RELEASE / "runtime"),
+            expected_revision=base.TARGET_SHA,
+            required_cmd_tokens=("commercial_handoff:app", "--no-access-log"),
+            required_pid=target_pid,
+            required_invocation_id=target_invocation_id,
+        )
 
     def running_identity_stable() -> dict:
         observed = _wait_for_stable_identity(
@@ -265,8 +348,10 @@ def _install_readiness_overlay(base) -> None:
             required_cmd_tokens=("commercial_handoff:app", "--no-access-log"),
         )
         state["target_pid"] = observed["pid"]
+        state["target_invocation_id"] = observed["invocation_id"]
         return {
             "pid": observed["pid"],
+            "invocation_id": observed["invocation_id"],
             "cwd": observed["cwd"],
             "revision": base.TARGET_SHA,
             "no_access_log": True,
@@ -276,31 +361,27 @@ def _install_readiness_overlay(base) -> None:
         }
 
     def https_health_stable() -> dict:
-        target_pid = state.get("target_pid")
-        if not target_pid:
-            raise base.GateError("target MainPID was not pinned before HTTPS readiness")
-        health = _wait_for_stable_health(base, original_health)
-        _wait_for_stable_identity(
-            base,
-            expected_cwd=str(base.RELEASE / "runtime"),
-            expected_revision=base.TARGET_SHA,
-            required_cmd_tokens=("commercial_handoff:app", "--no-access-log"),
-            required_pid=target_pid,
-        )
-        return {**health, "verified_main_pid": target_pid}
+        target_pid, target_invocation_id = target_generation()
+        health = _wait_for_stable_health(base, raw_health_probe)
+        verify_target_generation()
+        return {
+            **health,
+            "verified_main_pid": target_pid,
+            "verified_invocation_id": target_invocation_id,
+        }
 
     def stripe_acceptance_same_generation() -> None:
-        target_pid = state.get("target_pid")
-        if not target_pid:
-            raise base.GateError("target MainPID was not pinned before Stripe acceptance")
+        target_pid, target_invocation_id = target_generation()
+        verify_target_generation()
         original_stripe_acceptance()
-        _wait_for_stable_identity(
-            base,
-            expected_cwd=str(base.RELEASE / "runtime"),
-            expected_revision=base.TARGET_SHA,
-            required_cmd_tokens=("commercial_handoff:app", "--no-access-log"),
-            required_pid=target_pid,
-        )
+        verify_target_generation()
+        final_health = _wait_for_stable_health(base, raw_health_probe)
+        verify_target_generation()
+        state["post_stripe_health"] = {
+            **final_health,
+            "verified_main_pid": target_pid,
+            "verified_invocation_id": target_invocation_id,
+        }
 
     def restore_previous_service_stable(
         backup: Path,
@@ -325,22 +406,39 @@ def _install_readiness_overlay(base) -> None:
             expected_cwd=previous_cwd,
             expected_revision=previous_revision,
         )
+        rollback_health = _wait_for_stable_health(base, raw_health_probe)
+        _wait_for_stable_identity(
+            base,
+            expected_cwd=previous_cwd,
+            expected_revision=previous_revision,
+            required_pid=observed["pid"],
+            required_invocation_id=observed["invocation_id"],
+        )
         return {
             "verified": True,
             "service_sha256": restored_hash,
             "pid": observed["pid"],
+            "invocation_id": observed["invocation_id"],
             "cwd": observed["cwd"],
             "revision": observed["revision"],
             "stable_samples": observed["stable_samples"],
             "identity_attempts": observed["attempts"],
             "readiness_timeout_seconds": observed["readiness_timeout_seconds"],
+            "https_health": rollback_health,
         }
+
+    def evidence_with_readiness(payload: dict) -> Path:
+        final_health = state.get("post_stripe_health")
+        if isinstance(final_health, dict):
+            payload = {**payload, "post_stripe_https_health": final_health}
+        return original_evidence(payload)
 
     base.prepare = prepare_with_readiness_policy
     base.running_identity = running_identity_stable
     base.https_health = https_health_stable
     base.stripe_acceptance = stripe_acceptance_same_generation
     base.restore_previous_service = restore_previous_service_stable
+    base.evidence = evidence_with_readiness
 
 
 def main() -> int:
