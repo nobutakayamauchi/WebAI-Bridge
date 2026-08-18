@@ -151,6 +151,32 @@ Resolution:
 
 Align docs to current implementation while preserving explicit non-claims.
 
+## Counter-DA finding 6 — valid secrets in an unsafe env file are still a breach
+
+Requiring Stripe/cookie/webhook secret **values** is insufficient if the file supplying them is world-readable, group-writable, a symlink, missing, or hidden inside the deployed runtime tree.
+
+Resolution:
+
+The deterministic systemd profile pins:
+
+```text
+WEB_AI_ENV_FILE=/etc/webai-bridge/webai-bridge.env
+```
+
+For an active paid `commercial_handoff` deployment, preflight also validates that this exact file:
+
+- exists;
+- is absolute;
+- is a regular non-symlink file;
+- lives outside the Git/runtime tree;
+- grants no world permissions;
+- grants no group write permission;
+- has a parent directory that is not group/world writable.
+
+A root-owned `0640` style file is acceptable; `0644`, group-writable, world-readable, symlinked, or missing secret authority fails startup.
+
+The secret values themselves remain absent from generated deployment artifacts.
+
 ## Frozen Hosted v1 candidate scope
 
 Required for this bounded release:
@@ -193,6 +219,7 @@ Code/CI must reject or preserve safety under at least:
 - Creator Studio enabled without creator auth;
 - missing/unsafe creator password/session secret files;
 - active paid handoff without cookie/Stripe/webhook secrets;
+- missing/symlinked/world-readable/group-writable commercial env file;
 - product package/Instructions/Knowledge permission widening;
 - Knowledge digest mismatch;
 - draft package pretending to be active/runnable;
@@ -214,7 +241,7 @@ After code/CI passes, the remaining external sequence is:
 ```text
 exact branch/revision deployed to controlled Linux host
 → state/apps + creator secret files created with safe ownership/mode
-→ private Stripe/cookie/webhook environment configured
+→ private Stripe/cookie/webhook environment file created with safe ownership/mode
 → renderer --creator-studio
 → systemd preflight PASS
 → Caddy fixed-domain HTTPS PASS
