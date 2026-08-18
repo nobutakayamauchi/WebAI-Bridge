@@ -14,9 +14,9 @@ HOSTSAFE_PATH = "deploy/exact_head_deploy_hostsafe.py"
 READY_PATH = "deploy/exact_head_deploy_hostsafe_ready.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
 
-TARGET_SHA = "fa95d97047b6e75550cea4a6d7fb669e215d7393"
-TARGET_TREE = "18ba28507f9d70461769ef60ff9ab7624996e76d"
-ENV_AUTHORITY_ID = "SYSTEMD_FINAL_UNSET_EXEC_REBIND_GIT_SCOPED_V1"
+TARGET_SHA = "5fd4c791e636464f1a3b5195a3e1048b505d6de5"
+TARGET_TREE = "155dc692264a8f7edcd74b0eaff8cba28b0f11ef"
+ENV_AUTHORITY_ID = "SYSTEMD_FINAL_UNSET_EXEC_REBIND_GIT_SCOPED_V2"
 PREFLIGHT_TIMEOUT_SECONDS = 30
 STRIPE_ACCEPTANCE_TIMEOUT_SECONDS = 60
 STRIPE_HTTP_TIMEOUT_SECONDS = 5
@@ -58,6 +58,25 @@ EXECUTION_HAZARD_ENV_KEYS = (
     "OPENSSL_MODULES",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID",
+    "OPENAI_CUSTOM_HEADERS",
+    "OPENAI_LOG",
+    "WEB_CONCURRENCY",
+    "FORWARDED_ALLOW_IPS",
+    "UVICORN_RELOAD",
+    "UVICORN_WORKERS",
+    "UVICORN_ENV_FILE",
+    "UVICORN_APP_DIR",
+    "UVICORN_FACTORY",
+    "UVICORN_PROXY_HEADERS",
+    "UVICORN_FORWARDED_ALLOW_IPS",
+    "UVICORN_ACCESS_LOG",
+    "UVICORN_SSL_KEYFILE",
+    "UVICORN_SSL_CERTFILE",
+    "UVICORN_SSL_CA_CERTS",
+    "UVICORN_ROOT_PATH",
 )
 
 EXPECTED_RUNTIME_POLICY = {
@@ -67,6 +86,7 @@ EXPECTED_RUNTIME_POLICY = {
     "handoff_ttl_seconds": 600,
     "entitlement_cookie_max_age_seconds": 31536000,
 }
+EXPECTED_SERVER_AUTHORITY = "PROGRAMMATIC_SINGLE_WORKER_V1"
 
 
 def _run_git(*args: str) -> str:
@@ -179,9 +199,9 @@ def _expected_preflight(base) -> str:
 def _expected_start(base) -> str:
     return (
         f"{_exec_prefix(base)} "
-        f"{base.RELEASE}/runtime/.venv/bin/uvicorn commercial_handoff:app "
-        "--host 127.0.0.1 --port 8080 --proxy-headers "
-        "--forwarded-allow-ips=127.0.0.1 --no-access-log"
+        f"{base.RELEASE}/runtime/.venv/bin/python "
+        f"{base.RELEASE}/runtime/production_server.py "
+        "commercial_handoff:app --no-access-log"
     )
 
 
@@ -209,6 +229,8 @@ def _validate_target_environment_authority(base, service: Path, manifest: Path) 
     data = json.loads(manifest.read_text(encoding="utf-8"))
     if data.get("environment_authority") != "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1":
         raise base.GateError("deployment manifest lost effective environment authority identity")
+    if data.get("server_authority") != EXPECTED_SERVER_AUTHORITY:
+        raise base.GateError("deployment manifest server authority mismatch")
     if data.get("runtime_policy") != EXPECTED_RUNTIME_POLICY:
         raise base.GateError("deployment manifest runtime policy authority mismatch")
 
@@ -372,6 +394,7 @@ def _install_envsafe_overlay(base, host, controller_revision: str) -> None:
             "candidate_service_sha256": candidate_hash,
             "service_overlay": ENV_AUTHORITY_ID,
             "environment_authority": "SYSTEMD_FINAL_UNSET_THEN_EXEC_REBIND_V1",
+            "server_authority": EXPECTED_SERVER_AUTHORITY,
             "runtime_policy": dict(EXPECTED_RUNTIME_POLICY),
             "git_trust_scope": "ExecStartPre only",
             "git_safe_directory": str(base.RELEASE),
