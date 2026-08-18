@@ -119,10 +119,10 @@
     box.appendChild(document.createTextNode(`Knowledge verified: ${data.knowledge_verified}`));
     box.appendChild(document.createElement('br'));
     box.appendChild(document.createTextNode(`Active packages: ${data.active_packages}`));
-    if (data.checkout_url) {
+    if (data.buyer_path) {
       box.appendChild(document.createElement('br'));
       const a = document.createElement('a');
-      a.href = data.checkout_url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Stripe購入テストを開く';
+      a.href = data.buyer_path; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '購入者ページを開く';
       box.appendChild(a);
     }
   }
