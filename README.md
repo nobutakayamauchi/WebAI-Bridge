@@ -1,10 +1,10 @@
 # WebAI-Bridge
 
-Create, distribute, monetize, and run portable Web AI packages with Knowledge, BYOK, and cost-aware inference routing.
+Create, distribute, monetize, and run Web AI packages with Knowledge, BYOK, entitlement enforcement, and cost-aware inference routing.
 
 ## Product boundary
 
-WebAI Bridge is not only a GPT migration utility. It is an **AI Package Platform** with four independent controls:
+WebAI Bridge is an **AI Package Platform** with four independent controls:
 
 1. **AI Package** — name, description, Instructions, Knowledge, model/routing policy.
 2. **Access** — free, included allowance, paid access, buy-once, subscription, per-use.
@@ -22,79 +22,124 @@ NO PAYER RESOLUTION -> NO BUDGET AUTHORIZATION -> NO MODEL EXECUTION
 
 ```text
 creator-studio/   Smartphone creator surface
-runtime/          Hosted runtime, buyer UI, auth, entitlement, Stripe handoff/webhook, Knowledge, ledger
+runtime/          Hosted runtime, buyer UI, auth, entitlement, Stripe checkout/webhook, Knowledge, ledger
+deploy/           Dogfood and deterministic fixed-domain deployment tooling
 cost-router/      Cost/payer boundary and pricing logic
 package-schema/   Canonical AI Package contract
-deploy/           Dogfood and fixed-domain deployment tooling
 docs/             Product, security, distribution and /goal evidence
 ```
 
-## Current hosted state
+## Current Hosted state
 
-`HOSTED V1 CANDIDATE / LIVE DOGFOOD PROVEN / FIXED-DOMAIN RELEASE EVIDENCE PENDING`
+`HOSTED V1 CANDIDATE / REAL FIXED-DOMAIN CHAIN PROVEN ON OLDER REVISION / EXACT-HEAD REVALIDATION REQUIRED`
 
-The current Hosted path has already passed real-device dogfood for the important commercial chain:
+The controlled Oracle/iPhone run proved the important real commercial chain on one exact revision:
 
 ```text
-Stripe payment
-→ durable webhook entitlement
-→ one-time browser handoff
-→ iPhone Safari
+fixed-domain HTTPS
+→ authenticated smartphone Creator Studio
+→ second paid product direct publish
+→ live Stripe payment
+→ fixed-domain webhook entitlement
+→ iPhone buyer handoff
 → ephemeral buyer BYOK
 → server-owned PACKAGE_TEXT Knowledge
 → provider response
 → revocation
+→ same buyer immediately denied
 ```
 
-Creator Studio now supports authenticated direct publish of a validated three-artifact bundle:
+That run deliberately fed its production-only failures back into PR #30. Therefore the older live evidence is not silently promoted to certify the newer branch head.
+
+## Current buyer authority contract
+
+The current challenger makes Stripe payment authority and browser possession separate:
+
+```text
+buyer /a/{slug}
+→ /api/buy/{slug}
+→ public Stripe client_reference_id
++ signed HttpOnly initiating-browser cookie
+→ Stripe Payment Link
+→ durable webhook entitlement
+→ verified Checkout Session locator
++ matching initiating-browser proof
+→ one-time POST-body handoff
+→ signed entitlement cookie
+```
+
+Important invariants:
+
+```text
+PAYMENT LINK != VERIFIED PAYMENT
+CHECKOUT SESSION LOCATOR != BROWSER AUTHORITY
+BYOK CONNECTED != ACCESS AUTHORITY
+```
+
+A valid paid Checkout Session without the signed initiating-browser proof is denied. One-time `handoff_...` authority is never placed in handoff/activation URLs. Deterministic production rendering also disables raw Uvicorn access logging as defense in depth.
+
+## Creator Studio
+
+Authenticated Creator Studio can directly publish a validated Hosted/BYOK/PACKAGE_TEXT BUY_ONCE bundle:
 
 ```text
 Package JSON + Instructions + Knowledge
-→ authority-safe install
+→ private three-artifact install
+→ Package JSON authority commit last
+→ Knowledge digest verification
 → explicit activation
 → registry reload
-→ buyer URL
+→ buyer path /a/{slug}
 ```
 
-The creator surface is fail-closed behind creator-only authentication when exposed publicly. Active package authority cannot be silently overwritten by a later Studio publish.
-
-## What is still not claimed
-
-The repository does **not** yet claim generic production completion.
-
-Remaining external release evidence includes:
-
-- fixed public hostname/DNS;
-- stable HTTPS reverse proxy rather than Quick Tunnel dogfood;
-- exact deployed revision + systemd preflight on that host;
-- production secret-file permissions/logging review;
-- one complete Creator Studio direct-publish cycle on the fixed-domain host;
-- one buyer purchase/use/revoke cycle on that same deployed revision;
-- final iPhone/Safari acceptance after the fixed-domain deployment.
-
-Portable runtime, purchased platform credits/wallets, creator-funded shared inference, sponsored/hybrid payer modes, and OpenAI Plugin delivery are separate future scopes. They are not required to call the bounded Hosted/BYOK sale path usable.
+Active package authority cannot be silently overwritten by a later Studio publish. The normal sale path exposed after publish is the WebAI buyer/browser-bound checkout route, not the raw Stripe Payment Link.
 
 ## Deployment profiles
 
-The deterministic renderer keeps two surfaces separate:
+The deterministic renderer keeps two production surfaces explicit:
 
 ```text
-buyer-only commercial host
-→ commercial:app
+BUYER_ONLY_COMMERCIAL_V1
+→ commercial_bound:app
 → Studio disabled
+→ browser-bound Stripe checkout
 
-creator-managed commercial host
+CREATOR_STUDIO_COMMERCIAL_V1
 → commercial_handoff:app
 → creator-authenticated Studio/direct publish
+→ browser-bound Stripe checkout
 ```
 
-Creator mode is opt-in. It does not place creator, Stripe, entitlement, or provider secret values in generated deployment artifacts.
+Both delegate the canonical paid runtime and share active-paid secret/environment preflight checks. Creator mode keeps mutable package authority under the private state directory rather than the read-only deployed Git tree.
 
-See `deploy/README.md` and the current `/goal` records under `docs/` for the exact external acceptance boundary.
+## External Stripe acceptance
+
+`runtime/stripe_external_acceptance.py` is a deployment/acceptance gate, not a process-liveness dependency. It verifies live Payment Link metadata/amount/currency/one-time/redirect bindings and the fixed-domain webhook/event contract. Stripe list APIs are paginated to completion and pagination anomalies fail closed.
+
+## PACKAGE_TEXT Knowledge
+
+Hosted first-class Knowledge is a private server artifact bound to Package JSON by SHA-256. Lexical retrieval handles Japanese/CJK and indexes ASCII `_`/`-` compounds as both full terms and meaningful components; this was added after a real `ORACLE_FIXED_DOMAIN_...` fixture exposed a component-retrieval blind spot.
+
+## What is still not claimed
+
+The repository does **not** yet claim generic production completion. Before the bounded Hosted v1 merge/release decision, the **latest exact PR head** still needs fixed-domain revalidation of:
+
+- deterministic renderer + systemd preflight;
+- public HTTPS and exact running revision;
+- live Stripe remote contract;
+- Creator/product authority integrity and active-overwrite refusal;
+- browser-bound live buyer payment/handoff on iPhone Safari;
+- no buyer authority in visible URLs/retained request evidence;
+- ephemeral BYOK + PACKAGE_TEXT component retrieval + bounded provider response;
+- revoke → immediate denial.
+
+Portable runtime, portable Knowledge secrecy, purchased platform credits/wallets, creator-funded shared inference, sponsored/hybrid payer modes, full subscription automation, multi-worker BYOK, DRM, and OpenAI Plugin delivery are separate future scopes.
+
+See `deploy/README.md` and `docs/GOAL_HOSTED_V1_PRODUCTION_STUDIO.md` for the exact acceptance and stop boundaries.
 
 ## Origin / evidence
 
-The original dogfood evidence remains in `nobutakayamauchi/RS-AI-limit-development`, Issue #10 and Draft PR #11. This repository is now the product implementation source; the Limit Development repository remains the experimental evidence source.
+The original dogfood evidence remains in `nobutakayamauchi/RS-AI-limit-development`, Issue #10 and Draft PR #11. This repository is now the product implementation source; the Limit Development repository remains an experimental evidence source.
 
 ## License
 
