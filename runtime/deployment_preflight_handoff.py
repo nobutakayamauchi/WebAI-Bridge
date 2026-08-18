@@ -47,6 +47,44 @@ def _package_text_findings(source: dict[str, str]) -> tuple[set[str], list[dict]
     return local_scopes, findings
 
 
+def _live_sale_secret_findings(source: dict[str, str], *, active_paid_packages: int) -> list[dict]:
+    """Require the secrets needed by the canonical paid browser/webhook path.
+
+    The buyer-only/manual runtime can still be tested without these values, but a
+    production-style commercial_handoff surface with an active paid package must
+    not start in a state where checkout handoff or durable webhook fulfillment is
+    guaranteed to fail later at request time.
+    """
+    if active_paid_packages <= 0:
+        return []
+
+    findings: list[dict] = []
+    cookie_secret = (source.get("WEB_AI_ENTITLEMENT_COOKIE_SECRET") or "").strip()
+    if len(cookie_secret) < 32:
+        findings.append({
+            "code": "ENTITLEMENT_COOKIE_SECRET_MISSING",
+            "scope": "commercial-secrets",
+            "message": "Active paid handoff requires WEB_AI_ENTITLEMENT_COOKIE_SECRET with at least 32 characters",
+        })
+
+    stripe_key = (source.get("WEB_AI_STRIPE_SECRET_KEY") or "").strip()
+    if not stripe_key.startswith(("sk_", "rk_")) or len(stripe_key) < 10:
+        findings.append({
+            "code": "STRIPE_SECRET_KEY_MISSING_OR_INVALID",
+            "scope": "commercial-secrets",
+            "message": "Active paid handoff requires a Stripe server/restricted key in WEB_AI_STRIPE_SECRET_KEY",
+        })
+
+    webhook_secret = (source.get("WEB_AI_STRIPE_WEBHOOK_SECRET") or "").strip()
+    if len(webhook_secret) < 8:
+        findings.append({
+            "code": "STRIPE_WEBHOOK_SECRET_MISSING",
+            "scope": "commercial-secrets",
+            "message": "Active paid handoff requires WEB_AI_STRIPE_WEBHOOK_SECRET so payment entitlement does not depend on browser redirect survival",
+        })
+    return findings
+
+
 def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
     source = dict(os.environ if env is None else env)
     findings: list[dict] = []
@@ -56,7 +94,7 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
         findings.append({
             "code": "HANDOFF_ROUTE_SURFACE_INVALID",
             "scope": "deployment",
-            "message": f"WEB_AI_ROUTE_SURFACE must be {EXPECTED_SURFACE} for browser-handoff dogfood",
+            "message": f"WEB_AI_ROUTE_SURFACE must be {EXPECTED_SURFACE} for browser-handoff/Creator Studio runtime",
         })
 
     if not (BASE_DIR / "commercial_handoff.py").is_file():
@@ -89,7 +127,11 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
             continue
         base_findings.append(item)
 
-    combined = base_findings + findings + knowledge_findings + creator_findings
+    live_sale_findings = _live_sale_secret_findings(
+        source,
+        active_paid_packages=int(result.get("active_paid_packages") or 0),
+    )
+    combined = base_findings + findings + knowledge_findings + creator_findings + live_sale_findings
     result["findings"] = combined
     result["ok"] = not combined
     result["status"] = "PASS" if not combined else "FAIL"
@@ -98,6 +140,7 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
     result["package_text_knowledge_packages"] = len(local_scopes)
     result["creator_studio_enabled"] = studio_enabled
     result["creator_auth_protected"] = creator_auth_protected and not combined
+    result["live_sale_secrets_configured"] = not live_sale_findings
     if studio_enabled:
         result["creator_auth_mode"] = "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1" if creator_auth_protected else "INVALID"
     else:
@@ -106,7 +149,7 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run paid browser-handoff deployment preflight")
+    parser = argparse.ArgumentParser(description="Run paid browser-handoff / Creator Studio deployment preflight")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
