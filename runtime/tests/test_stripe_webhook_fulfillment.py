@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import importlib
 import json
 import re
@@ -39,6 +40,12 @@ def signed_event(event_id: str, event_type: str = "checkout.session.completed"):
     return payload, f"t={ts},v1={digest}"
 
 
+def _extract_transfer_code(page: str) -> str:
+    match = re.search(r"<code>(handoff_[^<]+)</code>", page)
+    assert match is not None
+    return html.unescape(match.group(1))
+
+
 @pytest.fixture()
 def gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_AI_LEDGER_PATH", str(tmp_path / "ledger.sqlite3"))
@@ -69,7 +76,7 @@ def post_event(client, event_id: str):
     return client.post("/webhooks/stripe", content=payload, headers={"Stripe-Signature": signature})
 
 
-def test_webhook_first_then_redirect_still_gets_exactly_one_browser_handoff(gateway):
+def test_webhook_first_then_completion_still_gets_exactly_one_browser_handoff(gateway):
     module = gateway
     webhook_client = TestClient(module.app)
     payment_browser = TestClient(module.app)
@@ -77,17 +84,21 @@ def test_webhook_first_then_redirect_still_gets_exactly_one_browser_handoff(gate
     assert first.status_code == 200, first.text
     assert first.json()["fulfilled"] is True
     assert module.entitlements.authorize_payment(package_id=SLUG, payment_ref=PAYMENT_REF)
-    redirect = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
-    assert redirect.status_code == 303, redirect.text
-    assert redirect.headers["location"].startswith(f"/checkout/handoff/{SLUG}?ticket=handoff_")
+
+    completion = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
+    assert completion.status_code == 200
+    assert f"/checkout/handoff/{SLUG}?ticket=" not in completion.text
+    assert _extract_transfer_code(completion.text).startswith("handoff_")
     assert payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 409
     assert len(module.entitlements.list_for_package(SLUG)) == 1
 
 
-def test_redirect_first_then_webhook_is_idempotent(gateway):
+def test_completion_first_then_webhook_is_idempotent(gateway):
     module = gateway
     client = TestClient(module.app)
-    assert client.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 303
+    completion = client.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
+    assert completion.status_code == 200
+    assert _extract_transfer_code(completion.text).startswith("handoff_")
     assert len(module.entitlements.list_for_package(SLUG)) == 1
     webhook = post_event(client, "evt_RedirectFirst123")
     assert webhook.status_code == 200, webhook.text
@@ -122,11 +133,12 @@ def test_browser_handoff_remains_post_only_and_one_time_after_webhook(gateway):
     module = gateway
     client = TestClient(module.app)
     assert post_event(client, "evt_Handoff123").status_code == 200
-    redirect = client.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
-    landing = client.get(redirect.headers["location"])
-    match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
-    assert match
-    activate = match.group(1).replace("&amp;", "&")
+    completion = client.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
+    assert completion.status_code == 200
+    transfer_code = _extract_transfer_code(completion.text)
+    activate = f"/checkout/activate/{SLUG}"
     assert client.get(activate, follow_redirects=False).status_code == 405
-    assert client.post(activate, follow_redirects=False).status_code == 303
-    assert client.post(activate, follow_redirects=False).status_code == 409
+    first_activation = client.post(activate, data={"ticket": transfer_code}, follow_redirects=False)
+    assert first_activation.status_code == 303
+    assert "ticket=" not in first_activation.headers.get("location", "")
+    assert client.post(activate, data={"ticket": transfer_code}, follow_redirects=False).status_code == 409
