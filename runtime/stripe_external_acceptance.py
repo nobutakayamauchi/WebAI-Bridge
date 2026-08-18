@@ -61,8 +61,15 @@ def _stripe_get(*, secret_key: str, path: str, label: str, timeout: float = 10.0
 
 
 def _list_all(*, secret_key: str, path: str, label: str, timeout: float = 10.0) -> list[dict]:
+    """Read an entire Stripe list fail-closed instead of trusting the first page.
+
+    External acceptance is an authority gate, so a 101st Payment Link, webhook,
+    or line item is just as relevant as the first. Silent truncation could hide a
+    conflicting price or stale remote object and produce a false PASS.
+    """
     items: list[dict] = []
     starting_after: str | None = None
+    seen_cursors: set[str] = set()
     while True:
         query = {"limit": 100}
         if starting_after:
@@ -76,13 +83,19 @@ def _list_all(*, secret_key: str, path: str, label: str, timeout: float = 10.0) 
         page = payload.get("data")
         if not isinstance(page, list):
             raise StripeExternalAcceptanceError(f"{label} response has no data list")
-        dict_page = [item for item in page if isinstance(item, dict)]
+        if any(not isinstance(item, dict) for item in page):
+            raise StripeExternalAcceptanceError(f"{label} response contains a non-object item")
+        dict_page = list(page)
         items.extend(dict_page)
         if not payload.get("has_more"):
             return items
-        if not dict_page or not isinstance(dict_page[-1].get("id"), str):
+        if not dict_page or not isinstance(dict_page[-1].get("id"), str) or not dict_page[-1]["id"]:
             raise StripeExternalAcceptanceError(f"{label} pagination could not advance")
-        starting_after = dict_page[-1]["id"]
+        next_cursor = dict_page[-1]["id"]
+        if next_cursor in seen_cursors:
+            raise StripeExternalAcceptanceError(f"{label} pagination cursor repeated")
+        seen_cursors.add(next_cursor)
+        starting_after = next_cursor
 
 
 def list_payment_links(*, secret_key: str, timeout: float = 10.0) -> list[dict]:
@@ -96,16 +109,12 @@ def list_webhook_endpoints(*, secret_key: str, timeout: float = 10.0) -> list[di
 def retrieve_payment_link_line_items(*, secret_key: str, payment_link_id: str, timeout: float = 10.0) -> list[dict]:
     if not payment_link_id.startswith("plink_"):
         raise StripeExternalAcceptanceError("Stripe Payment Link id is invalid")
-    payload = _stripe_get(
+    return _list_all(
         secret_key=secret_key,
-        path="/v1/payment_links/" + quote(payment_link_id, safe="") + "/line_items?limit=100",
+        path="/v1/payment_links/" + quote(payment_link_id, safe="") + "/line_items",
         label="Stripe Payment Link line items",
         timeout=timeout,
     )
-    data = payload.get("data")
-    if not isinstance(data, list):
-        raise StripeExternalAcceptanceError("Stripe Payment Link line items response has no data list")
-    return [item for item in data if isinstance(item, dict)]
 
 
 def validate_payment_link_external_contract(
