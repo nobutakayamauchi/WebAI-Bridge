@@ -15,7 +15,8 @@ DEFAULT_MAX_CONTEXT_CHARS = 6000
 DEFAULT_MAX_CHUNKS = 4
 DEFAULT_CHUNK_CHARS = 1800
 
-_ASCII_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]+", re.IGNORECASE)
+_ASCII_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]*", re.IGNORECASE)
+_ASCII_COMPONENT_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _CJK_RUN_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]+")
 
 
@@ -25,7 +26,15 @@ def _normalize(text: str) -> str:
 
 def _terms(text: str) -> set[str]:
     normalized = _normalize(text)
-    terms = set(_ASCII_WORD_RE.findall(normalized))
+    terms: set[str] = set()
+    for token in _ASCII_WORD_RE.findall(normalized):
+        terms.add(token)
+        if "_" in token or "-" in token:
+            # Keep the canonical compound token for exact/high-specificity matching,
+            # but also expose meaningful components. Real fixed-domain acceptance
+            # found that ORACLE could not retrieve ORACLE_FIXED_DOMAIN_... because
+            # underscore/hyphen compounds were previously indexed as one opaque word.
+            terms.update(component for component in _ASCII_COMPONENT_RE.findall(token) if len(component) >= 2)
     for run in _CJK_RUN_RE.findall(normalized):
         if len(run) == 1:
             terms.add(run)
