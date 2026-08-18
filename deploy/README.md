@@ -1,8 +1,8 @@
 # WebAI Bridge — Fixed-Domain Hosted v1 Runbook
 
-Status: `HOSTED_V1_CANDIDATE / EXTERNAL_FIXED_DOMAIN_REVALIDATION_REQUIRED`
+Status: `HOSTED_V1_CANDIDATE / REALITY_LOOP_2 / EXTERNAL_REVALIDATION_REQUIRED`
 
-This runbook prepares the first stable public-host deployment. It intentionally stops where real infrastructure evidence begins.
+This runbook prepares the stable public-host deployment. The first Oracle/iPhone fixed-domain run proved the core chain and then fed production-only findings back into the current challenger. The older live revision does not certify a newer branch head; redeploy and revalidate the exact current revision.
 
 ## Deployment profiles
 
@@ -43,7 +43,7 @@ Before a public deployment can be claimed, resolve:
 - Stripe server/restricted API key and webhook signing secret;
 - one buyer-owned provider API key for the live BYOK acceptance call.
 
-Do not put creator passwords, Stripe secrets, entitlement tokens, or buyer provider keys into Git, Package JSON, generated deployment files, shell history, URLs, or issue/PR text.
+Do not put creator passwords, Stripe secrets, entitlement tokens, handoff codes, or buyer provider keys into Git, Package JSON, generated deployment files, shell history, URLs, screenshots, or issue/PR text.
 
 ## 1. Host layout
 
@@ -137,7 +137,7 @@ Caddyfile
 deployment-manifest.json
 ```
 
-The manifest contains paths and policy state, not secret values.
+The manifest contains paths and policy state, not secret values. Production Uvicorn access logging is disabled by the renderer because default access logs retain the full request target/query string. This is defense in depth; buyer handoff authority is also no longer carried in URLs.
 
 The renderer rejects malformed domains, non-exact revisions, unsafe service/path identifiers, overlapping runtime/state directories, world-writable output directories, and symlink output targets.
 
@@ -203,9 +203,9 @@ The application binds only to:
 127.0.0.1:8080
 ```
 
-Caddy terminates public HTTPS and forwards to localhost. The generated Uvicorn command trusts forwarded proxy headers only from localhost.
+Caddy terminates public HTTPS and forwards to localhost. The generated Uvicorn command trusts forwarded proxy headers only from localhost and runs with `--no-access-log`.
 
-Do not add proxy/application request logging that captures credentials, cookies, authorization headers, checkout secrets, provider keys, or URL query values that may carry one-time authority.
+Do not add proxy/application request logging that captures credentials, cookies, authorization headers, checkout session identifiers, provider keys, form bodies, or URL query values. If you add operational logging later, design an explicit redaction policy first.
 
 ## 8. Startup preflight
 
@@ -277,15 +277,76 @@ Use the package installer/activation CLI deliberately. For PACKAGE_TEXT Knowledg
 INSTALL != ACTIVATE
 ```
 
-## 10. Stripe webhook
+## 10. Stripe remote contract and webhook
 
-Configure the live Stripe webhook endpoint to the deployed host's webhook route and use the exact signing secret in the private environment file.
+Configure the live Stripe webhook endpoint to:
 
-Durable webhook fulfillment is required so a paid entitlement does not depend on the buyer returning through the browser redirect successfully.
+```text
+https://ai.example.com/webhooks/stripe
+```
+
+with both fulfillment events:
+
+```text
+checkout.session.completed
+checkout.session.async_payment_succeeded
+```
+
+Each live BUY_ONCE Payment Link must also match the Package contract:
+
+```text
+metadata.webai_package_id = {slug}
+metadata.access_mode = BUY_ONCE
+amount/currency = Package access price
+one-time price
+active + live mode
+completion redirect = https://ai.example.com/checkout/complete/{slug}?session_id={CHECKOUT_SESSION_ID}
+```
+
+After the local service is healthy, load the private environment and run the separate external validator:
+
+```bash
+cd /opt/webai-bridge/runtime
+set -a; . /etc/webai-bridge/webai-bridge.env; set +a
+.venv/bin/python stripe_external_acceptance.py --domain ai.example.com --config-dir /var/lib/webai-bridge/apps
+```
+
+The Stripe server/restricted key used here needs read access to Payment Links (including line items) and webhook endpoints. The command emits only status/findings, never secret values.
+
+**Do not add this remote check to `ExecStartPre`.** A Stripe API outage must not turn an otherwise healthy local process restart into an outage. This is a deployment/acceptance gate, not a runtime liveness dependency.
+
+Durable webhook fulfillment remains required so a paid entitlement does not depend on the buyer returning through the browser completion page successfully.
 
 Do not treat opening checkout, a redirect, or a client-side success page as payment verification.
 
-## 11. Process/revision verification
+## 11. Browser handoff
+
+The fixed-domain acceptance run found that an earlier one-time `handoff_...` authority token was placed in the query string and therefore appeared in the browser URL and Uvicorn journal.
+
+The repaired contract is:
+
+```text
+verified Stripe completion
+→ one-time handoff code stored hashed server-side
+→ completion page uses hidden POST body for same-browser activation
+OR
+→ user copies one-time code into clean /checkout/handoff/{slug} page in Safari
+→ POST /checkout/activate/{slug}
+→ entitlement cookie
+```
+
+Rules:
+
+- handoff authority must never appear in a URL;
+- activation is POST-only;
+- code is one-time and TTL-bounded;
+- completion/handoff pages are `Cache-Control: no-store`;
+- after verification, the completion page scrubs Stripe `session_id` from the visible address bar;
+- do not retain or screenshot the one-time transfer code.
+
+A missing `session_id` on the completion route fails closed with a human-readable HTML error rather than raw FastAPI validation JSON.
+
+## 12. Process/revision verification
 
 After deployment or code revision changes, restart the service and verify the actual running service against the rendered revision and preflight result.
 
@@ -295,23 +356,24 @@ For creator-managed product publishing, registry reload occurs in-process after 
 FILES CHANGED != RUNNING PROCESS CHANGED
 ```
 
-## 12. Live buyer acceptance
+## 13. Live buyer acceptance
 
 Use the public HTTPS hostname. Verify at minimum:
 
 1. `/health` works;
 2. buyer security headers are present;
 3. unpaid/missing entitlement is denied;
-4. Stripe payment produces durable entitlement;
-5. browser handoff reaches the exact paid Package;
-6. buyer connects ephemeral BYOK;
-7. one small provider request succeeds;
-8. PACKAGE_TEXT Knowledge is retrieved when the product uses it;
-9. revocation immediately denies the same buyer again.
+4. external Stripe contract validator passes;
+5. live Stripe payment produces durable entitlement;
+6. browser handoff reaches the exact paid Package with no authority in URLs/logs;
+7. buyer connects ephemeral BYOK;
+8. one small provider request succeeds;
+9. PACKAGE_TEXT Knowledge is retrieved when the product uses it, including a component inside an `_`/`-` compound fixture;
+10. revocation immediately denies the same buyer again.
 
 Existing `live_acceptance.py` can be used for the bounded perimeter/provider checks where applicable. Do not record secret values or provider response text in evidence.
 
-## 13. Creator-managed second-product proof
+## 14. Creator-managed second-product proof
 
 On the fixed-domain deployed revision, create a **new second product from Studio without editing repository code or transferring files over SSH**.
 
@@ -328,9 +390,9 @@ buyer path is reachable
 
 This is the real-infrastructure counterpart to the CI config-only/multi-product proof.
 
-## 14. iPhone/Safari acceptance
+## 15. iPhone/Safari acceptance
 
-Repeat the final buyer flow on the actual iPhone/Safari path after fixed-domain deployment. Confirm checkout handoff, BYOK connection, chat, Knowledge result, reload/restart behavior, revoked access, and absence of secrets in visible URLs.
+Repeat the final buyer flow on the actual iPhone/Safari path after each code revision that changes handoff, entitlement, BYOK, Knowledge, or deployment behavior. Confirm checkout handoff, BYOK connection, chat, Knowledge result, reload/restart behavior, revoked access, and absence of authority/credential values in visible URLs and retained request logs.
 
 Desktop/CI success does not establish the mobile boundary.
 
@@ -343,10 +405,11 @@ CODE / CI PASS
 < FIXED-DOMAIN HOST PREFLIGHT PASS
 < PROCESS + REVISION IDENTITY PASS
 < PUBLIC HTTPS PASS
+< STRIPE REMOTE CONTRACT PASS
 < CREATOR DIRECT-PUBLISH PASS
-< BUYER PAYMENT / ENTITLEMENT / BYOK PASS
+< BUYER PAYMENT / ENTITLEMENT / QUERYLESS HANDOFF / BYOK PASS
 < SECOND-PRODUCT PASS
-< IPHONE PASS
+< IPHONE + REVOKE PASS
 ```
 
-None of the lower states imply the higher state.
+None of the lower states imply the higher state. A previous revision's production evidence does not certify a later revision.
