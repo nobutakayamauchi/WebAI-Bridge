@@ -64,6 +64,7 @@ def _write_candidate(tmp_path: Path) -> tuple[Path, Path]:
         json.dumps(
             {
                 "environment_authority": "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1",
+                "server_authority": m.EXPECTED_SERVER_AUTHORITY,
                 "runtime_policy": m.EXPECTED_RUNTIME_POLICY,
             }
         ) + "\n",
@@ -72,9 +73,9 @@ def _write_candidate(tmp_path: Path) -> tuple[Path, Path]:
     return service, manifest
 
 
-def test_target_pin_is_exact_new_pr30_head_and_tree():
-    assert m.TARGET_SHA == "fa95d97047b6e75550cea4a6d7fb669e215d7393"
-    assert m.TARGET_TREE == "18ba28507f9d70461769ef60ff9ab7624996e76d"
+def test_target_pin_is_exact_frozen_pr30_head_and_tree():
+    assert m.TARGET_SHA == "5fd4c791e636464f1a3b5195a3e1048b505d6de5"
+    assert m.TARGET_TREE == "155dc692264a8f7edcd74b0eaff8cba28b0f11ef"
 
 
 def test_target_environment_authority_accepts_exact_final_unset_and_exec_rebind(tmp_path):
@@ -91,7 +92,16 @@ def test_target_environment_authority_rejects_missing_proxy_or_tls_sanitizer(tmp
         m._validate_target_environment_authority(FakeBase, service, manifest)
 
 
-def test_target_environment_authority_rejects_envfile_override_of_revision_shape(tmp_path):
+def test_target_environment_authority_rejects_provider_or_server_hazard_omission(tmp_path):
+    service, manifest = _write_candidate(tmp_path)
+    text = service.read_text(encoding="utf-8")
+    text = text.replace(" OPENAI_BASE_URL", "", 1).replace(" WEB_CONCURRENCY", "", 1)
+    service.write_text(text, encoding="utf-8")
+    with pytest.raises(GateError, match="final environment sanitization"):
+        m._validate_target_environment_authority(FakeBase, service, manifest)
+
+
+def test_target_environment_authority_rejects_revision_exec_drift(tmp_path):
     service, manifest = _write_candidate(tmp_path)
     text = service.read_text(encoding="utf-8")
     text = text.replace(
@@ -112,6 +122,15 @@ def test_target_environment_authority_rejects_runtime_policy_manifest_drift(tmp_
         m._validate_target_environment_authority(FakeBase, service, manifest)
 
 
+def test_target_environment_authority_rejects_server_authority_drift(tmp_path):
+    service, manifest = _write_candidate(tmp_path)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["server_authority"] = "CLI_MULTIWORKER"
+    manifest.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    with pytest.raises(GateError, match="server authority mismatch"):
+        m._validate_target_environment_authority(FakeBase, service, manifest)
+
+
 def test_fixed_runtime_policy_is_removed_from_envfile_authority_and_rebound():
     fixed = m._fixed_runtime_environment(FakeBase)
     assert fixed["WEB_AI_PRICING_FILE"] == f"{FakeBase.RELEASE}/runtime/pricing.json"
@@ -127,6 +146,15 @@ def test_fixed_runtime_policy_is_removed_from_envfile_authority_and_rebound():
     for key, value in fixed.items():
         assert f"{key}={value}" in pre
         assert f"{key}={value}" in start
+
+
+def test_expected_start_uses_pinned_programmatic_single_worker_launcher_surface():
+    start = m._expected_start(FakeBase)
+    assert f"{FakeBase.RELEASE}/runtime/.venv/bin/python" in start
+    assert f"{FakeBase.RELEASE}/runtime/production_server.py" in start
+    assert "commercial_handoff:app" in start
+    assert "--no-access-log" in start
+    assert "/bin/uvicorn" not in start
 
 
 def test_scoped_git_trust_is_preflight_only_and_target_start_stays_exact(tmp_path):
@@ -160,9 +188,11 @@ def test_candidate_preflight_preserves_final_unset_and_has_total_timeout(tmp_pat
     assert "HTTPS_PROXY" in body
     assert "SSL_CERT_FILE" in body
     assert "GIT_DIR" in body
+    assert "OPENAI_BASE_URL" in body
+    assert "WEB_CONCURRENCY" in body
     assert "WEB_AI_REQUESTS_PER_MINUTE" in body
     assert "ExecStart=/usr/bin/env PATH=/usr/bin:/bin PYTHONNOUSERSITE=1" in body
-    assert "uvicorn" not in body
+    assert "production_server.py" not in body
 
 
 def test_candidate_preflight_fails_closed_if_unset_is_missing(tmp_path):
@@ -182,7 +212,7 @@ def test_candidate_preflight_fails_closed_if_unset_is_missing(tmp_path):
         m._candidate_preflight(Base, service)
 
 
-def test_stripe_acceptance_is_bounded_and_does_not_inherit_proxy_tls_or_loader_controls():
+def test_stripe_acceptance_is_bounded_and_does_not_inherit_execution_or_network_trust_controls():
     captured: dict[str, str] = {}
 
     class Base(FakeBase):
@@ -205,6 +235,10 @@ def test_stripe_acceptance_is_bounded_and_does_not_inherit_proxy_tls_or_loader_c
         "SSL_CERT_FILE",
         "OPENSSL_CONF",
         "SSLKEYLOGFILE",
+        "OPENAI_BASE_URL",
+        "OPENAI_CUSTOM_HEADERS",
+        "WEB_CONCURRENCY",
+        "UVICORN_WORKERS",
         "WEB_AI_REQUESTS_PER_MINUTE",
         "WEB_AI_BYOK_SESSION_TTL_SECONDS",
     ):
