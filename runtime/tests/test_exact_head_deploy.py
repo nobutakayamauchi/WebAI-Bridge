@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -29,12 +30,19 @@ def test_pinned_identity_constants():
 def test_verify_source_allows_only_pinned_venv(monkeypatch, tmp_path: Path):
     release = tmp_path / "release"
     venv = tmp_path / "venv"
-    release.mkdir(); venv.mkdir()
-    git(release, "init"); git(release, "config", "user.email", "t@example.com"); git(release, "config", "user.name", "T")
-    (release / "runtime").mkdir(); (release / "runtime/app.py").write_text("VALUE=1\n")
-    git(release, "add", "."); git(release, "commit", "-m", "fixture")
+    release.mkdir()
+    venv.mkdir()
+    git(release, "init")
+    git(release, "config", "user.email", "t@example.com")
+    git(release, "config", "user.name", "T")
+    (release / "runtime").mkdir()
+    (release / "runtime/app.py").write_text("VALUE=1\n")
+    git(release, "add", ".")
+    git(release, "commit", "-m", "fixture")
     sha = git(release, "rev-parse", "HEAD")
-    monkeypatch.setattr(m, "RELEASE", release); monkeypatch.setattr(m, "VENV", venv); monkeypatch.setattr(m, "TARGET_SHA", sha)
+    monkeypatch.setattr(m, "RELEASE", release)
+    monkeypatch.setattr(m, "VENV", venv)
+    monkeypatch.setattr(m, "TARGET_SHA", sha)
     (release / "runtime/.venv").symlink_to(venv, target_is_directory=True)
     m.verify_source()
     (release / "runtime/shadow.py").write_text("PWN=True\n")
@@ -43,32 +51,66 @@ def test_verify_source_allows_only_pinned_venv(monkeypatch, tmp_path: Path):
 
 
 def test_verify_source_rejects_tracked_modification(monkeypatch, tmp_path: Path):
-    release = tmp_path / "release"; venv = tmp_path / "venv"; release.mkdir(); venv.mkdir()
-    git(release, "init"); git(release, "config", "user.email", "t@example.com"); git(release, "config", "user.name", "T")
-    (release / "runtime").mkdir(); f = release / "runtime/app.py"; f.write_text("VALUE=1\n")
-    git(release, "add", "."); git(release, "commit", "-m", "fixture")
-    monkeypatch.setattr(m, "RELEASE", release); monkeypatch.setattr(m, "VENV", venv); monkeypatch.setattr(m, "TARGET_SHA", git(release, "rev-parse", "HEAD"))
-    (release / "runtime/.venv").symlink_to(venv, target_is_directory=True); f.write_text("VALUE=2\n")
+    release = tmp_path / "release"
+    venv = tmp_path / "venv"
+    release.mkdir()
+    venv.mkdir()
+    git(release, "init")
+    git(release, "config", "user.email", "t@example.com")
+    git(release, "config", "user.name", "T")
+    (release / "runtime").mkdir()
+    f = release / "runtime/app.py"
+    f.write_text("VALUE=1\n")
+    git(release, "add", ".")
+    git(release, "commit", "-m", "fixture")
+    monkeypatch.setattr(m, "RELEASE", release)
+    monkeypatch.setattr(m, "VENV", venv)
+    monkeypatch.setattr(m, "TARGET_SHA", git(release, "rev-parse", "HEAD"))
+    (release / "runtime/.venv").symlink_to(venv, target_is_directory=True)
+    f.write_text("VALUE=2\n")
     with pytest.raises(m.GateError, match="command failed"):
         m.verify_source()
 
 
-def test_control_rejects_live_working_directory_overlap(monkeypatch, tmp_path: Path):
-    control = tmp_path / "control"; control.mkdir(); (control / ".git").mkdir()
-    constraints = control / "deploy/runtime-tests-228.constraints.txt"; constraints.parent.mkdir(); constraints.write_text("x")
-    service = tmp_path / "webai.service"; service.write_text(f"[Service]\nWorkingDirectory={control}/runtime\n")
-    monkeypatch.setattr(m, "CONTROL", control); monkeypatch.setattr(m, "CONSTRAINTS", constraints); monkeypatch.setattr(m, "SERVICE", service)
-    monkeypatch.setattr(m, "CONSTRAINTS_SHA256", m.sha256(constraints)); monkeypatch.setattr(m, "git", lambda *args: m.ORIGIN)
-    with pytest.raises(m.GateError, match="overlaps"):
+def test_control_rejects_actual_live_working_directory_overlap(monkeypatch, tmp_path: Path):
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / ".git").mkdir()
+    constraints = control / "deploy/runtime-tests-228.constraints.txt"
+    constraints.parent.mkdir()
+    constraints.write_text("x")
+    monkeypatch.setattr(m, "CONTROL", control)
+    monkeypatch.setattr(m, "CONSTRAINTS", constraints)
+    monkeypatch.setattr(m, "CONSTRAINTS_SHA256", m.sha256(constraints))
+    answers = {
+        ("remote", "get-url", "origin"): m.ORIGIN,
+        ("status", "--porcelain", "--untracked-files=all"): "",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+        ("rev-parse", "HEAD"): "abc",
+        ("rev-parse", "origin/main"): "abc",
+    }
+    monkeypatch.setattr(m, "git", lambda repo, *args: answers[args])
+    monkeypatch.setattr(m, "run", lambda *args, **kwargs: "")
+    monkeypatch.setattr(m, "live_service_working_directory", lambda: control / "runtime")
+    with pytest.raises(m.GateError, match="actual production"):
         m.verify_control()
 
 
 def test_candidate_preflight_does_not_start_uvicorn(monkeypatch, tmp_path: Path):
-    service = tmp_path / "service"; service.write_text("\n".join([
-        "[Service]", "Type=simple", "User=webai", "Group=webai", "WorkingDirectory=/x/runtime",
+    service = tmp_path / "service"
+    service.write_text("\n".join([
+        "[Service]",
+        "Type=simple",
+        "User=webai",
+        "Group=webai",
+        "WorkingDirectory=/x/runtime",
         "Environment=DEPLOYED_REVISION=" + m.TARGET_SHA,
         "ExecStartPre=/x/runtime/.venv/bin/python /x/runtime/deployment_preflight_handoff.py",
-        "ExecStart=/x/runtime/.venv/bin/uvicorn commercial_handoff:app --no-access-log", "ProtectSystem=strict", "ReadWritePaths=/state", ""]))
+        "ExecStart=/x/runtime/.venv/bin/uvicorn commercial_handoff:app --no-access-log",
+        "ProtectSystem=strict",
+        "ReadWritePaths=/state",
+        "",
+    ]))
     seen = {}
     monkeypatch.setattr(m, "transient", lambda name, body: seen.update(name=name, body=body))
     m.candidate_preflight(service)
@@ -80,3 +122,74 @@ def test_candidate_preflight_does_not_start_uvicorn(monkeypatch, tmp_path: Path)
 def test_apply_requires_exact_sha_before_mutation():
     with pytest.raises(m.GateError, match="exactly equal"):
         m.apply("deadbeef")
+
+
+def test_restore_previous_service_requires_verified_hash_and_identity(monkeypatch, tmp_path: Path):
+    service = tmp_path / "service"
+    backup = tmp_path / "backup"
+    service.write_text("new")
+    backup.write_text("old")
+    monkeypatch.setattr(m, "SERVICE", service)
+    monkeypatch.setattr(m, "systemd_composition", lambda: None)
+    monkeypatch.setattr(m, "atomic_install", lambda src, dst, mode: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setattr(m.os, "readlink", lambda path: "/old/runtime")
+    monkeypatch.setattr(m, "process_revision", lambda pid: "oldsha")
+    monkeypatch.setattr(m, "run", lambda *args, **kwargs: "123" if "--property=MainPID" in args else "")
+    previous = {"cwd": str(Path("/old/runtime").resolve()), "revision": "oldsha"}
+    result = m.restore_previous_service(
+        backup,
+        expected_hash=m.sha256(backup),
+        expected_mode=0o644,
+        previous=previous,
+    )
+    assert result["verified"] is True
+    assert result["service_sha256"] == m.sha256(backup)
+    assert result["pid"] == 123
+    assert result["revision"] == "oldsha"
+
+
+def test_restore_previous_service_fails_if_hash_not_restored(monkeypatch, tmp_path: Path):
+    service = tmp_path / "service"
+    backup = tmp_path / "backup"
+    service.write_text("new")
+    backup.write_text("old")
+    monkeypatch.setattr(m, "SERVICE", service)
+    monkeypatch.setattr(m, "systemd_composition", lambda: None)
+    monkeypatch.setattr(m, "atomic_install", lambda src, dst, mode: None)
+    monkeypatch.setattr(m, "run", lambda *args, **kwargs: "")
+    with pytest.raises(m.GateError, match="hash mismatch"):
+        m.restore_previous_service(
+            backup,
+            expected_hash=m.sha256(backup),
+            expected_mode=0o644,
+            previous={"cwd": "/old/runtime", "revision": "oldsha"},
+        )
+
+
+def test_restore_previous_service_rejects_wrong_previous_identity(monkeypatch, tmp_path: Path):
+    service = tmp_path / "service"
+    backup = tmp_path / "backup"
+    service.write_text("new")
+    backup.write_text("old")
+    monkeypatch.setattr(m, "SERVICE", service)
+    monkeypatch.setattr(m, "systemd_composition", lambda: None)
+    monkeypatch.setattr(m, "atomic_install", lambda src, dst, mode: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setattr(m.os, "readlink", lambda path: "/different/runtime")
+    monkeypatch.setattr(m, "process_revision", lambda pid: "oldsha")
+    monkeypatch.setattr(m, "run", lambda *args, **kwargs: "123" if "--property=MainPID" in args else "")
+    with pytest.raises(m.GateError, match="rollback cwd mismatch"):
+        m.restore_previous_service(
+            backup,
+            expected_hash=m.sha256(backup),
+            expected_mode=0o644,
+            previous={"cwd": "/old/runtime", "revision": "oldsha"},
+        )
+
+
+def test_evidence_paths_are_unique_and_read_only(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(m, "STATE", tmp_path)
+    p1 = m.evidence({"a": 1})
+    p2 = m.evidence({"a": 2})
+    assert p1 != p2
+    assert stat.S_IMODE(p1.stat().st_mode) == 0o400
+    assert stat.S_IMODE(p2.stat().st_mode) == 0o400
