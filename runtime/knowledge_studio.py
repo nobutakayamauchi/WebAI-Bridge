@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 
@@ -7,6 +10,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import Field
 
+import package_bundle_cli
 from commercial_studio import MANUAL_WARNING, adapt_manual_hosted_entitlement
 from knowledge_artifact import canonical_knowledge_file, text_sha256
 from package_knowledge import PACKAGE_TEXT_BACKEND
@@ -27,6 +31,12 @@ class KnowledgeStudioDraft(StudioDraft):
     knowledge_max_context_chars: int = Field(default=6000, ge=256, le=50_000)
     knowledge_max_chunks: int = Field(default=4, ge=1, le=12)
     knowledge_chunk_chars: int = Field(default=1800, ge=200, le=8000)
+
+
+class KnowledgeStudioPublishDraft(KnowledgeStudioDraft):
+    """Explicit creator-authorized request to install and activate one validated bundle."""
+
+    publish_confirmed: bool = False
 
 
 def build_knowledge_studio_result(*, core, payload: KnowledgeStudioDraft) -> dict:
@@ -109,6 +119,90 @@ def build_knowledge_studio_result(*, core, payload: KnowledgeStudioDraft) -> dic
     return adapted
 
 
+def _write_private(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+    os.chmod(path, 0o600)
+
+
+def _publish_validated_bundle(*, base, payload: KnowledgeStudioPublishDraft) -> dict:
+    if not payload.publish_confirmed:
+        raise HTTPException(status_code=400, detail="Explicit publish confirmation is required")
+    if payload.access_mode != "BUY_ONCE":
+        raise HTTPException(status_code=422, detail="Direct publish v1 supports BUY_ONCE only")
+    if not payload.stripe_link_matches_configuration:
+        raise HTTPException(status_code=422, detail="Stripe Payment Link creator attestation is required before publish")
+
+    try:
+        result = build_knowledge_studio_result(core=base.core, payload=payload)
+    except StudioValidationError as exc:
+        raise HTTPException(status_code=422, detail={"errors": exc.errors, "warnings": exc.warnings}) from None
+
+    package = result["package"]
+    slug = str(package.get("slug") or "")
+    checkout = (package.get("access") or {}).get("checkout") or {}
+    config_dir = Path(base.core.CONFIG_DIR)
+
+    # Browser downloads are optional. The authenticated creator can publish the
+    # exact validated three-artifact result directly to the private server state.
+    # Source files are ephemeral and owner-only; package_bundle_cli remains the
+    # single authority for Package JSON-last install and Knowledge integrity.
+    with tempfile.TemporaryDirectory(prefix=".studio-publish-", dir=str(config_dir)) as temp_name:
+        temp_dir = Path(temp_name)
+        os.chmod(temp_dir, 0o700)
+        package_source = temp_dir / "package.in"
+        instructions_source = temp_dir / "instructions.in"
+        knowledge_source = temp_dir / "knowledge.in"
+        _write_private(package_source, json.dumps(package, ensure_ascii=False, indent=2) + "\n")
+        _write_private(instructions_source, payload.instructions + "\n")
+        _write_private(knowledge_source, payload.knowledge_text)
+
+        try:
+            installed = package_bundle_cli.install_bundle(
+                package_source=package_source,
+                instructions_source=instructions_source,
+                knowledge_source=knowledge_source,
+                config_dir=config_dir,
+                # A prior failed activation may have left a safe non-runnable
+                # draft. A fresh authenticated publish may deliberately replace it.
+                replace_nonrunnable=True,
+            )
+        except (SystemExit, RuntimeError, ValueError, OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=409, detail={"stage": "install", "error": str(exc)}) from None
+
+        try:
+            activated = package_bundle_cli.activate_bundle(
+                config_path=Path(installed["package_path"]),
+                checkout_reviewed=False,
+            )
+        except (SystemExit, RuntimeError, ValueError, OSError, json.JSONDecodeError) as exc:
+            # Fail closed: an install that cannot activate remains draft and is
+            # therefore not sellable/runnable. A later creator publish can retry.
+            raise HTTPException(
+                status_code=409,
+                detail={"stage": "activate", "error": str(exc), "draft_installed": True},
+            ) from None
+
+    base.core.registry.reload()
+    active = base.core.registry.get(slug)
+    if active.get("status") != "active" or (active.get("access") or {}).get("commercial_enforcement") != "ENTITLEMENT_ENFORCED":
+        raise HTTPException(status_code=500, detail="Published package did not become active in the live registry")
+
+    return {
+        "status": "PUBLISHED",
+        "package_id": slug,
+        "authority_commit": installed["authority_commit"],
+        "knowledge_verified": bool(activated.get("knowledge_verified")),
+        "knowledge_sha256": activated.get("knowledge_sha256"),
+        "runtime": activated.get("runtime"),
+        "commercial": activated.get("commercial"),
+        "checkout_binding_verification": activated.get("checkout_binding_verification"),
+        "checkout_url": checkout.get("payment_link_url"),
+        "buyer_path": f"/a/{slug}",
+        "active_packages": len(base.core.registry.apps),
+        "secrets_in_output": False,
+    }
+
+
 def install_knowledge_studio_routes(base) -> None:
     """Replace only the Studio routes on the paid Knowledge route surface.
 
@@ -117,7 +211,7 @@ def install_knowledge_studio_routes(base) -> None:
     route ordering while leaving all checkout/chat routes untouched.
     """
 
-    studio_paths = {"/studio", "/api/studio/options", "/api/studio/validate"}
+    studio_paths = {"/studio", "/api/studio/options", "/api/studio/validate", "/api/studio/publish"}
     base.app.router.routes[:] = [
         route for route in base.app.router.routes
         if getattr(route, "path", None) not in studio_paths
@@ -137,6 +231,7 @@ def install_knowledge_studio_routes(base) -> None:
             "knowledge_backend": PACKAGE_TEXT_BACKEND,
             "knowledge_artifact_export": True,
             "knowledge_bundle_install": "PACKAGE_JSON_PLUS_INSTRUCTIONS_PLUS_KNOWLEDGE",
+            "knowledge_direct_publish": True,
             "knowledge_portable_runtime": "NOT_IMPLEMENTED",
             "commercial_enforcement": "ACTIVATION_REQUIRED",
         })
@@ -150,3 +245,9 @@ def install_knowledge_studio_routes(base) -> None:
             return build_knowledge_studio_result(core=base.core, payload=payload)
         except StudioValidationError as exc:
             raise HTTPException(status_code=422, detail={"errors": exc.errors, "warnings": exc.warnings}) from None
+
+    @base.app.post("/api/studio/publish")
+    def knowledge_creator_studio_publish(payload: KnowledgeStudioPublishDraft, request: Request) -> dict:
+        base.core.require_studio_enabled()
+        base.core.enforce_rate_limit(request)
+        return _publish_validated_bundle(base=base, payload=payload)
