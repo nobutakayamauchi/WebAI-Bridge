@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>WebAI Bridge Creator Studio — Knowledge</title>
   <style>
-    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;background:#f3f4f5}*{box-sizing:border-box}body{margin:0}main{width:min(760px,100%);margin:auto;min-height:100dvh;background:#fff;padding:18px 16px calc(34px + env(safe-area-inset-bottom))}h1{font-size:25px;margin:0 0 6px}h2{font-size:18px;margin:0 0 10px}.note{color:#666;font-size:13px;line-height:1.55}.hero{background:#111;color:#fff;border-radius:16px;padding:14px;margin:14px 0;line-height:1.5}.hero small{color:#ddd}section{border:1px solid #ddd;border-radius:16px;padding:14px;margin:12px 0}label{display:block;font-size:14px;font-weight:700;margin:10px 0 5px}input,textarea,select{width:100%;border:1px solid #bbb;border-radius:11px;padding:12px;font:inherit;background:#fff}textarea{min-height:130px;resize:vertical}#knowledgeText{min-height:230px}.check{display:flex;gap:8px;align-items:flex-start;font-weight:500;line-height:1.45}.check input{width:auto;margin-top:3px}button{border:0;border-radius:13px;padding:13px 14px;font:inherit;font-weight:800}.primary{width:100%;background:#111;color:#fff}.secondary{background:#eee;color:#111;flex:1;min-width:150px}.secondary:disabled{opacity:.4}.row{display:flex;gap:8px;flex-wrap:wrap}.status{background:#f6f7f8;border-radius:12px;padding:11px;font-size:13px;line-height:1.5;margin:10px 0}.ok{color:#087f23}.bad{color:#b00020}.warn{color:#8a5a00}pre{white-space:pre-wrap;overflow:auto;max-height:330px;background:#f6f7f8;border-radius:12px;padding:11px;font-size:12px}details{margin-top:10px}summary{font-weight:700;cursor:pointer}
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;background:#f3f4f5}*{box-sizing:border-box}body{margin:0}main{width:min(760px,100%);margin:auto;min-height:100dvh;background:#fff;padding:18px 16px calc(34px + env(safe-area-inset-bottom))}h1{font-size:25px;margin:0 0 6px}h2{font-size:18px;margin:0 0 10px}.note{color:#666;font-size:13px;line-height:1.55}.hero{background:#111;color:#fff;border-radius:16px;padding:14px;margin:14px 0;line-height:1.5}.hero small{color:#ddd}section{border:1px solid #ddd;border-radius:16px;padding:14px;margin:12px 0}label{display:block;font-size:14px;font-weight:700;margin:10px 0 5px}input,textarea,select{width:100%;border:1px solid #bbb;border-radius:11px;padding:12px;font:inherit;background:#fff}textarea{min-height:130px;resize:vertical}#knowledgeText{min-height:230px}.check{display:flex;gap:8px;align-items:flex-start;font-weight:500;line-height:1.45}.check input{width:auto;margin-top:3px}button{border:0;border-radius:13px;padding:13px 14px;font:inherit;font-weight:800}.primary{width:100%;background:#111;color:#fff}.primary:disabled{opacity:.4}.secondary{background:#eee;color:#111;flex:1;min-width:150px}.secondary:disabled{opacity:.4}.row{display:flex;gap:8px;flex-wrap:wrap}.status{background:#f6f7f8;border-radius:12px;padding:11px;font-size:13px;line-height:1.5;margin:10px 0}.ok{color:#087f23}.bad{color:#b00020}.warn{color:#8a5a00}pre{white-space:pre-wrap;overflow:auto;max-height:330px;background:#f6f7f8;border-radius:12px;padding:11px;font-size:12px}details{margin-top:10px}summary{font-weight:700;cursor:pointer}.publish{margin-top:14px}.publish a{display:inline-block;margin-top:8px;color:#111;font-weight:800}
   </style>
 </head>
 <body><main>
@@ -65,6 +65,9 @@
       <button class="secondary" id="downloadKnowledge" disabled>③ Knowledge</button>
     </div>
     <p class="note">3ファイルは同じ検証結果から生成されます。server側では <code>package_bundle_cli.py install</code> が3点をPackage JSON lastでauthority commitし、その後 <code>activate</code> でKnowledge integrityを再確認します。</p>
+    <button class="primary publish" id="publishServer" disabled>このサーバーへInstall + Activate</button>
+    <div id="publishResult" class="status" hidden></div>
+    <p class="note">認証済みCreator専用操作です。検証済み3点をserverへ直接配置し、Knowledge integrity確認後に有料Packageをactive化します。Downloadは証拠・バックアップ用で、公開操作には不要です。</p>
   </section>
 </main>
 <script>
@@ -102,10 +105,32 @@
     };
   }
 
+  function setPublishResult(data) {
+    const box = $('publishResult');
+    box.hidden = false;
+    box.textContent = '';
+    const title = document.createElement('strong');
+    title.className = 'ok'; title.textContent = 'PUBLISHED'; box.appendChild(title);
+    box.appendChild(document.createElement('br'));
+    box.appendChild(document.createTextNode(`Package: ${data.package_id}`));
+    box.appendChild(document.createElement('br'));
+    box.appendChild(document.createTextNode(`Authority: ${data.authority_commit}`));
+    box.appendChild(document.createElement('br'));
+    box.appendChild(document.createTextNode(`Knowledge verified: ${data.knowledge_verified}`));
+    box.appendChild(document.createElement('br'));
+    box.appendChild(document.createTextNode(`Active packages: ${data.active_packages}`));
+    if (data.checkout_url) {
+      box.appendChild(document.createElement('br'));
+      const a = document.createElement('a');
+      a.href = data.checkout_url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Stripe購入テストを開く';
+      box.appendChild(a);
+    }
+  }
+
   $('form').addEventListener('submit', async e => {
     e.preventDefault(); last = null;
-    ['downloadPackage','downloadInstructions','downloadKnowledge'].forEach(id => $(id).disabled = true);
-    $('status').textContent = '検証中…'; $('readiness').hidden = true; $('result').textContent = '';
+    ['downloadPackage','downloadInstructions','downloadKnowledge','publishServer'].forEach(id => $(id).disabled = true);
+    $('status').textContent = '検証中…'; $('readiness').hidden = true; $('publishResult').hidden = true; $('result').textContent = '';
     const draft = collect();
     try {
       const res = await fetch('/api/studio/validate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(draft)});
@@ -120,7 +145,7 @@
       $('readiness').hidden = false;
       $('readiness').innerHTML = `<strong>Runtime:</strong> ${r.runtime || 'UNKNOWN'}<br><strong>販売:</strong> ${r.commercial || 'UNKNOWN'}<br><strong>Blockers:</strong> ${(r.blockers || []).join(', ') || 'なし'}<br><strong>Knowledge SHA-256:</strong> ${data.knowledge_artifact?.sha256 || 'NONE'}`;
       $('result').textContent = (data.warnings?.length ? `WARNINGS\n- ${data.warnings.join('\n- ')}\n\n` : '') + JSON.stringify(data.package, null, 2);
-      ['downloadPackage','downloadInstructions','downloadKnowledge'].forEach(id => $(id).disabled = false);
+      ['downloadPackage','downloadInstructions','downloadKnowledge','publishServer'].forEach(id => $(id).disabled = false);
     } catch (err) {
       $('status').innerHTML = '<span class="bad">ERROR</span>'; $('result').textContent = err.message || String(err);
     }
@@ -129,6 +154,32 @@
   $('downloadPackage').addEventListener('click', () => last && download(last.data.exports.package_filename, JSON.stringify(last.data.package, null, 2) + '\n', 'application/json'));
   $('downloadInstructions').addEventListener('click', () => last && download(last.data.exports.instructions_filename, last.draft.instructions + '\n', 'text/markdown'));
   $('downloadKnowledge').addEventListener('click', () => last && download(last.data.exports.knowledge_filename, last.draft.knowledge_text, 'text/markdown'));
+
+  $('publishServer').addEventListener('click', async () => {
+    if (!last) return;
+    if (!confirm('検証済み3点をこのサーバーへinstallし、有料Packageとしてactive化します。続けますか？')) return;
+    const button = $('publishServer');
+    button.disabled = true;
+    const box = $('publishResult'); box.hidden = false; box.textContent = 'Install + Activate中…';
+    try {
+      const payload = {...last.draft, publish_confirmed: true};
+      const res = await fetch('/api/studio/publish', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = data.detail || data;
+        box.innerHTML = '<span class="bad">PUBLISH NG</span><br>';
+        box.appendChild(document.createTextNode(typeof detail === 'string' ? detail : JSON.stringify(detail)));
+        button.disabled = false;
+        return;
+      }
+      setPublishResult(data);
+    } catch (err) {
+      box.innerHTML = '<span class="bad">PUBLISH ERROR</span><br>';
+      box.appendChild(document.createTextNode(err.message || String(err)));
+      button.disabled = false;
+    }
+  });
+
   loadOptions().catch(err => { $('status').innerHTML = '<span class="bad">ERROR</span>'; $('result').textContent = err.message; });
 })();
 </script></body></html>
