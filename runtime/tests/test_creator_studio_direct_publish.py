@@ -88,7 +88,6 @@ class _Core:
         return None
 
 
-
 def test_direct_publish_requires_explicit_confirmation_and_uses_bundle_authority(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / "apps"
     config_dir.mkdir(mode=0o700)
@@ -167,8 +166,10 @@ def test_direct_publish_requires_explicit_confirmation_and_uses_bundle_authority
     assert body["package_id"] == SLUG
     assert body["authority_commit"] == "PACKAGE_JSON_LAST"
     assert body["knowledge_verified"] is True
-    assert body["checkout_url"] == PAYMENT_LINK
+    assert body["checkout_url"] == f"/api/buy/{SLUG}"
     assert body["buyer_path"] == f"/a/{SLUG}"
+    assert body["stripe_payment_link_configured"] is True
+    assert PAYMENT_LINK not in json.dumps(body, ensure_ascii=False)
     assert body["active_packages"] == 2
     assert body["secrets_in_output"] is False
     assert core.registry.reloaded is True
