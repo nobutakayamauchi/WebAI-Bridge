@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 from pathlib import Path
 
 from creator_auth import creator_auth_findings
@@ -16,6 +17,14 @@ CANONICAL_SURFACE = "commercial:app"
 
 def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _inside(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _package_text_findings(source: dict[str, str]) -> tuple[set[str], list[dict]]:
@@ -47,14 +56,61 @@ def _package_text_findings(source: dict[str, str]) -> tuple[set[str], list[dict]
     return local_scopes, findings
 
 
-def _live_sale_secret_findings(source: dict[str, str], *, active_paid_packages: int) -> list[dict]:
-    """Require the secrets needed by the canonical paid browser/webhook path.
+def _commercial_env_file_findings(source: dict[str, str], *, active_paid_packages: int) -> list[dict]:
+    if active_paid_packages <= 0:
+        return []
+    raw = (source.get("WEB_AI_ENV_FILE") or "").strip()
+    if not raw:
+        return [{
+            "code": "COMMERCIAL_ENV_FILE_UNSET",
+            "scope": "commercial-secrets",
+            "message": "Active paid handoff must identify the secret environment file with WEB_AI_ENV_FILE",
+        }]
 
-    The buyer-only/manual runtime can still be tested without these values, but a
-    production-style commercial_handoff surface with an active paid package must
-    not start in a state where checkout handoff or durable webhook fulfillment is
-    guaranteed to fail later at request time.
-    """
+    path = Path(raw)
+    findings: list[dict] = []
+    if not path.is_absolute():
+        findings.append({
+            "code": "COMMERCIAL_ENV_FILE_NOT_ABSOLUTE",
+            "scope": "commercial-secrets",
+            "message": "WEB_AI_ENV_FILE must be an absolute path",
+        })
+        return findings
+    if _inside(path, BASE_DIR):
+        findings.append({
+            "code": "COMMERCIAL_ENV_FILE_INSIDE_RUNTIME",
+            "scope": "commercial-secrets",
+            "message": "Commercial secret environment file must live outside the Git/runtime tree",
+        })
+    if path.is_symlink() or not path.exists() or not path.is_file():
+        findings.append({
+            "code": "COMMERCIAL_ENV_FILE_UNSAFE",
+            "scope": "commercial-secrets",
+            "message": "Commercial secret environment file must be an existing regular non-symlink file",
+        })
+        return findings
+
+    mode = stat.S_IMODE(path.stat().st_mode)
+    # 0600 and root:webai-style 0640 are both acceptable. World access and
+    # group write are not: this file carries Stripe/cookie authority.
+    if mode & 0o007 or mode & 0o020:
+        findings.append({
+            "code": "COMMERCIAL_ENV_FILE_PERMISSIONS_TOO_OPEN",
+            "scope": "commercial-secrets",
+            "message": "Commercial secret environment file must not grant world access or group write permission",
+        })
+    parent = path.parent
+    if parent.exists() and stat.S_IMODE(parent.stat().st_mode) & 0o022:
+        findings.append({
+            "code": "COMMERCIAL_ENV_FILE_PARENT_PERMISSIONS_TOO_OPEN",
+            "scope": "commercial-secrets",
+            "message": "Parent directory for commercial secret environment file must not be group/world writable",
+        })
+    return findings
+
+
+def _live_sale_secret_findings(source: dict[str, str], *, active_paid_packages: int) -> list[dict]:
+    """Require the secrets needed by the canonical paid browser/webhook path."""
     if active_paid_packages <= 0:
         return []
 
@@ -76,11 +132,11 @@ def _live_sale_secret_findings(source: dict[str, str], *, active_paid_packages: 
         })
 
     webhook_secret = (source.get("WEB_AI_STRIPE_WEBHOOK_SECRET") or "").strip()
-    if len(webhook_secret) < 8:
+    if not webhook_secret.startswith("whsec_") or len(webhook_secret) < 12:
         findings.append({
-            "code": "STRIPE_WEBHOOK_SECRET_MISSING",
+            "code": "STRIPE_WEBHOOK_SECRET_MISSING_OR_INVALID",
             "scope": "commercial-secrets",
-            "message": "Active paid handoff requires WEB_AI_STRIPE_WEBHOOK_SECRET so payment entitlement does not depend on browser redirect survival",
+            "message": "Active paid handoff requires a Stripe webhook signing secret in WEB_AI_STRIPE_WEBHOOK_SECRET",
         })
     return findings
 
@@ -120,18 +176,21 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
             and item.get("scope") in local_scopes
         ):
             continue
-        # Canonical paid gateway deliberately forbids public Studio. The handoff
-        # surface may expose it only when this preflight independently proves
-        # creator-only authentication is configured with private secret files.
         if item.get("code") == "PUBLIC_STUDIO_ENABLED" and creator_auth_protected:
             continue
         base_findings.append(item)
 
-    live_sale_findings = _live_sale_secret_findings(
-        source,
-        active_paid_packages=int(result.get("active_paid_packages") or 0),
+    active_paid_packages = int(result.get("active_paid_packages") or 0)
+    env_file_findings = _commercial_env_file_findings(source, active_paid_packages=active_paid_packages)
+    live_sale_findings = _live_sale_secret_findings(source, active_paid_packages=active_paid_packages)
+    combined = (
+        base_findings
+        + findings
+        + knowledge_findings
+        + creator_findings
+        + env_file_findings
+        + live_sale_findings
     )
-    combined = base_findings + findings + knowledge_findings + creator_findings + live_sale_findings
     result["findings"] = combined
     result["ok"] = not combined
     result["status"] = "PASS" if not combined else "FAIL"
@@ -140,6 +199,7 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
     result["package_text_knowledge_packages"] = len(local_scopes)
     result["creator_studio_enabled"] = studio_enabled
     result["creator_auth_protected"] = creator_auth_protected and not combined
+    result["commercial_env_file_safe"] = not env_file_findings
     result["live_sale_secrets_configured"] = not live_sale_findings
     if studio_enabled:
         result["creator_auth_mode"] = "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1" if creator_auth_protected else "INVALID"
