@@ -1,18 +1,18 @@
 # Runtime
 
-State: `HOSTED_V1_CANDIDATE / FIXED_DOMAIN_REALITY_LOOP_2 / REVALIDATION_REQUIRED`
+State: `HOSTED_V1_CANDIDATE / FIXED_DOMAIN_REALITY_LOOP_2 / EXACT-HEAD REVALIDATION_REQUIRED`
 
-This is the current hosted WebAI Bridge runtime. It serves activated AI Packages through smartphone URLs, keeps creator Instructions and hosted Knowledge server-side, separates access price from inference cost, and fails closed on package/payment states it cannot enforce.
+This is the current hosted WebAI Bridge runtime. It serves activated AI Packages through smartphone URLs, keeps creator Instructions and hosted Knowledge server-side, separates access price from inference cost, and fails closed on package/payment/browser authority it cannot verify.
 
 ## Runtime surfaces
 
 ### Buyer-only commercial surface
 
 ```text
-commercial:app
+commercial_bound:app
 ```
 
-Use when package authority is prepared outside the running service and Creator Studio must remain unavailable.
+Use when package authority is prepared outside the running service and Creator Studio remains unavailable. It preserves `commercial:app` as the canonical paid core and adds initiating-browser Stripe binding.
 
 ### Creator-managed commercial surface
 
@@ -20,13 +20,13 @@ Use when package authority is prepared outside the running service and Creator S
 commercial_handoff:app
 ```
 
-This extends the canonical commercial gateway with:
+This extends the same canonical paid core with:
 
+- initiating-browser Stripe binding;
 - server-owned `PACKAGE_TEXT` Knowledge;
 - creator-authenticated Creator Studio;
 - direct Package JSON + Instructions + Knowledge publish;
-- authority-safe activation and in-process registry reload;
-- the existing Stripe webhook/browser handoff/buyer routes.
+- authority-safe activation and in-process registry reload.
 
 Public Creator Studio is fail-closed unless creator authentication is safely configured.
 
@@ -49,13 +49,15 @@ And:
 DRAFT != RUNNABLE
 INSTALL != ACTIVATE
 PAYMENT LINK != VERIFIED PAYMENT
+CHECKOUT SESSION LOCATOR != BROWSER AUTHORITY
+BYOK CONNECTED != ACCESS AUTHORITY
 PAID HOSTED + NO ENTITLEMENT != RUNNABLE
 PORTABLE INTENT != HOSTED RUNTIME
 ```
 
-## Paid hosted path
+## Paid Hosted v1 path
 
-The bounded v1 commercial shape is:
+The bounded commercial shape is:
 
 ```text
 BUY_ONCE
@@ -63,12 +65,13 @@ BUY_ONCE
 + BYOK
 + Stripe Payment Link
 + durable webhook entitlement
-+ browser handoff
++ browser-bound checkout initiation
++ one-time POST-body handoff
 ```
 
-The code also retains bounded subscription/manual entitlement support, but Creator Studio direct publish v1 intentionally accepts BUY_ONCE only.
+Creator Studio direct publish v1 intentionally accepts `BUY_ONCE` only.
 
-The fixed-domain Oracle/iPhone acceptance run on revision `9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1` demonstrated the core real chain:
+The first Oracle/iPhone fixed-domain run on revision `9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1` demonstrated:
 
 ```text
 live Stripe payment
@@ -82,19 +85,9 @@ live Stripe payment
 → same buyer immediately denied with 401
 ```
 
-That run also found production-only weaknesses. The current branch contains follow-up repairs, so the old live evidence does **not** certify the newer branch head. Exact-revision revalidation is required before a fixed-domain PASS claim.
+That old-revision run found production-only weaknesses and therefore does **not** certify the newer branch head.
 
 ## Creator Studio
-
-Creator Studio validation covers:
-
-- canonical Package JSON Schema;
-- access price and charge basis;
-- payer/model/budget policy;
-- Stripe checkout binding metadata;
-- delivery/readiness boundaries;
-- Instructions;
-- server-owned Knowledge.
 
 On `commercial_handoff:app`, an authenticated creator can explicitly publish a validated BUY_ONCE bundle:
 
@@ -107,92 +100,131 @@ validate
 → Knowledge digest verification
 → activate entitlement enforcement
 → registry reload
-→ buyer path
+→ buyer path /a/{slug}
 ```
 
-A later Studio publish cannot silently overwrite an already-active package. Active authority requires a separate lifecycle operation.
+A later Studio publish cannot silently overwrite an already-active package. Publish output uses the WebAI buyer path / browser-bound checkout route, not the raw Stripe Payment Link as the normal sale URL.
 
 ## Creator authentication
 
-When Studio is public, the preflight requires:
+When Studio is public, preflight requires:
 
 - `WEB_AI_CREATOR_AUTH_ENABLED=1`;
-- private creator password file outside the runtime/Git tree;
-- private creator session-signing secret file outside the runtime/Git tree;
-- owner-only file permissions;
+- private creator password file outside runtime/Git;
+- private creator session-signing secret outside runtime/Git;
+- safe file/parent permissions;
 - bounded session TTL;
 - HTTPS.
 
 The browser receives a signed Secure/HttpOnly creator session cookie. Creator credentials are not placed in URLs.
 
-## Stripe and buyer entitlement
+## Stripe, browser binding, and buyer entitlement
 
-The commercial gateway supports:
+Durable webhook fulfillment and browser possession are intentionally separate authorities.
 
-- exact Stripe Payment Link/package/price/currency checks on checkout fulfillment;
-- persistent single-claim Checkout Session authority;
-- durable Stripe webhook fulfillment so entitlement does not depend on a surviving redirect;
-- short-lived one-time browser handoff codes;
-- signed buyer cookies whose authority is rechecked against the entitlement database;
-- revocation that immediately invalidates an existing buyer session.
-
-### Browser handoff authority rule
-
-A real fixed-domain run found that the earlier implementation carried `handoff_...` authority in query strings. That made a one-time authority value visible in the address bar and retainable by access logs.
-
-The current challenger therefore uses:
+Normal buyer flow:
 
 ```text
-Stripe completion session_id
-→ server verifies paid Checkout Session
-→ server issues hashed one-time handoff code
-→ same-browser activation: hidden POST body
-OR
-→ cross-browser transfer: user copies one-time code to a clean /checkout/handoff/{slug} page
+/a/{slug}
+→ /api/buy/{slug}
+→ generate public client_reference_id
+→ sign it into a short-lived HttpOnly package-scoped browser cookie
+→ redirect to the configured Stripe Payment Link with client_reference_id
+→ Stripe payment
+→ webhook creates/preserves durable entitlement
+→ fixed-domain completion carries session_id as a locator
+→ server verifies Stripe Session + Payment Link
+→ Session client_reference_id must match the signed initiating-browser cookie
+→ one-time handoff code
 → POST /checkout/activate/{slug}
-→ entitlement cookie
+→ signed entitlement cookie
 ```
 
-The handoff code is never embedded in the handoff/activation URL. Production rendering also disables Uvicorn access logs as defense in depth against retaining query-bearing request targets. Completion pages are `no-store` and scrub the Checkout `session_id` from the visible address bar after server verification.
+Security rules:
 
-For the production-style `commercial_handoff` surface with active paid packages, startup preflight requires the entitlement-cookie secret, Stripe server/restricted key, and Stripe webhook secret to be configured before the process is allowed to serve.
+- a valid paid Checkout Session without initiating-browser proof returns 403;
+- a mismatched `client_reference_id` returns 403;
+- browser-binding cookie tamper/expiry/wrong package fails closed;
+- the browser-binding proof is cleared after successful completion;
+- `handoff_...` authority is never placed in handoff/activation URLs;
+- handoff activation is POST-only, one-time and TTL-bounded;
+- completion/handoff pages are no-store;
+- production Uvicorn access logging is disabled as defense in depth;
+- raw Payment Link is configuration, not the normal buyer distribution URL.
 
-### External Stripe deployment contract
+A raw Payment Link can still produce a valid Stripe payment and durable webhook entitlement, but without `/api/buy/{slug}` the browser deliberately cannot mint access authority.
 
-Local startup preflight proves local secret/config safety; it cannot prove that Stripe's remote objects still point at the intended production host.
+### Revocation
 
-Run `stripe_external_acceptance.py` as a separate external gate to validate live Payment Link and webhook bindings. It checks:
+Buyer cookies are rechecked against the entitlement database. The real fixed-domain run proved:
+
+```text
+BYOK session still connected
++ entitlement revoked
+→ next /api/chat = 401
+```
+
+## Paid startup preflight
+
+Both deterministic paid profiles share commercial secret/environment checks when active paid packages exist:
+
+```text
+WEB_AI_ENV_FILE must be safe and outside runtime
+WEB_AI_ENTITLEMENT_COOKIE_SECRET present
+WEB_AI_STRIPE_SECRET_KEY structurally valid
+WEB_AI_STRIPE_WEBHOOK_SECRET structurally valid
+```
+
+Profile-specific preflights:
+
+```text
+BUYER_ONLY_COMMERCIAL_V1
+→ deployment_preflight_bound.py
+
+CREATOR_STUDIO_COMMERCIAL_V1
+→ deployment_preflight_handoff.py
+```
+
+They delegate canonical paid checks rather than creating independent commercial policy.
+
+## External Stripe deployment contract
+
+Local startup safety cannot prove Stripe's remote objects still match the fixed-domain deployment. Run `stripe_external_acceptance.py` as a separate deployment/acceptance gate.
+
+It validates:
 
 - active/live Payment Link;
-- package metadata binding (`webai_package_id`, `BUY_ONCE`);
-- configured amount/currency/one-time price;
-- exact fixed-domain completion redirect containing `{CHECKOUT_SESSION_ID}`;
+- exact package metadata (`webai_package_id`, `BUY_ONCE`);
+- amount/currency/one-time line items;
+- exact fixed-domain `{CHECKOUT_SESSION_ID}` completion redirect;
 - exact fixed-domain webhook URL;
 - required Checkout fulfillment events.
 
-This validator is intentionally **not** an `ExecStartPre` dependency: ordinary service restart must not fail merely because Stripe's API is temporarily unavailable.
+Payment Links, webhook endpoints and Payment Link line items are paginated to completion. Missing advancement ids, non-object data, or repeated pagination cursors fail closed so remote objects beyond the first page cannot be hidden by truncation.
+
+This validator is intentionally **not** `ExecStartPre`: a temporary Stripe API/control-plane outage must not prevent a healthy local service restart.
 
 ## BYOK
 
 Hosted BYOK is **server-proxy ephemeral**.
 
-The buyer enters a provider API key over HTTPS. The key is kept only in the current process-memory BYOK session, the browser input is cleared, and the browser receives an opaque HttpOnly session cookie. Forget/TTL/process restart removes the key.
+The buyer enters a provider API key over HTTPS. The key is retained only in current process memory; the browser input is cleared and receives an opaque HttpOnly session cookie. Forget/TTL/process restart removes the key.
 
 The current BYOK store is intentionally single-process memory. Multi-worker/shared-host credential-session semantics are not claimed.
 
 ## Knowledge
 
-Current first-class hosted Knowledge is `PACKAGE_TEXT`:
+Current first-class Hosted Knowledge is `PACKAGE_TEXT`:
 
 - canonical `{slug}.knowledge.md` server artifact;
 - SHA-256 bound from Package JSON;
 - bounded local lexical retrieval including Japanese/CJK handling;
-- ASCII `_`/`-` compounds indexed as both the full compound and component terms;
-- retrieved text treated as untrusted reference context rather than creator/system instruction authority.
+- ASCII `_`/`-` compounds indexed as both full compounds and component terms;
+- retrieved text remains untrusted reference context below server Safety/Creator Instructions.
 
-The component indexing was added after fixed-domain acceptance demonstrated that `ORACLE` could not retrieve a fact stored only as `ORACLE_FIXED_DOMAIN_...` when the compound was treated as one opaque token.
+Component indexing was added after the real acceptance fixture `ORACLE_FIXED_DOMAIN_...` could not be retrieved by an `ORACLE`-only query.
 
-Legacy/provider vector-store binding remains a separate supported shape where configured. Portable Knowledge packaging is not implemented.
+Portable Knowledge packaging/secrecy is not implemented.
 
 ## Safety policy
 
@@ -208,15 +240,15 @@ This is a server-controlled policy boundary, not a claim of perfect moderation o
 
 ## Deployment identity and package authority
 
-Deployment Identity records the exact service, working directory, route surface and Git revision. Diagnostics remain off by default on public deployments.
+Deployment Identity records the exact service, working directory, route surface and Git revision. Diagnostics remain off by default on public deployment.
 
-For a creator-managed production host, mutable package authority belongs outside the deployed Git/runtime tree, for example:
+Creator-managed mutable package authority belongs outside the deployed Git/runtime tree, for example:
 
 ```text
 /var/lib/webai-bridge/apps
 ```
 
-This keeps `ProtectSystem=strict` meaningful while allowing Creator Studio to publish only under the explicitly writable private state tree.
+This keeps `ProtectSystem=strict` meaningful while allowing authenticated direct publish only under the explicitly writable private state tree.
 
 ```text
 CODE PRESENT != RUNNING REVISION
@@ -225,7 +257,7 @@ FILES CHANGED != RUNNING PROCESS CHANGED
 
 ## Request and abuse bounds
 
-The runtime bounds current input, history count/size, output tokens, and basic request rate. The current process-local rate limiting is not claimed as a distributed quota/abuse system.
+The runtime bounds input size, history count/size, output tokens, and basic request rate. Current process-local rate limiting is not claimed as a distributed quota/abuse system.
 
 ## Tests
 
@@ -234,11 +266,11 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-CI includes commercial checkout/webhook/handoff, entitlement, ephemeral BYOK, Knowledge, Creator Studio, direct publish, package authority, deployment renderer/preflight, external Stripe contract validation, and end-to-end regression coverage.
+CI covers commercial checkout/webhook/handoff, browser binding, entitlement/revocation, ephemeral BYOK, PACKAGE_TEXT retrieval, Creator Studio/direct publish, package authority, deterministic deployment renderer/preflight, external Stripe remote-contract validation, pagination failure modes, and end-to-end regression paths.
 
 ## Current non-goals / remaining limits
 
-Not required for the bounded Hosted/BYOK v1 release:
+Not required for bounded Hosted/BYOK v1:
 
 - portable runtime/ZIP execution;
 - portable Knowledge secrecy;
@@ -250,4 +282,4 @@ Not required for the bounded Hosted/BYOK v1 release:
 - perfect DRM;
 - OpenAI Plugin delivery.
 
-A generic production claim remains withheld until the **latest** exact branch revision is redeployed and the fixed-domain HTTPS, Creator Studio second-product, live Stripe remote contract, buyer purchase/handoff/BYOK/Knowledge, no-authority-in-URL/log evidence, and revoke/401 boundaries are revalidated on that same revision.
+A generic production claim remains withheld until the **latest exact PR head** is redeployed and the fixed-domain HTTPS, Stripe remote contract, browser-bound buyer flow, Creator second-product authority, live BYOK/Knowledge result, no-authority-in-URL/log boundary, and revoke/401 behavior are revalidated on that same revision.
