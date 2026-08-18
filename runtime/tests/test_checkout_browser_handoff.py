@@ -5,6 +5,7 @@ import importlib
 import re
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,7 +32,10 @@ def gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_AI_ALLOW_INSECURE_HTTP", "1")
     monkeypatch.setenv("WEB_AI_ENTITLEMENT_COOKIE_SECRET", COOKIE_SECRET)
     monkeypatch.setenv("WEB_AI_STRIPE_SECRET_KEY", "rk_test_handoff")
-    for name in ["commercial_handoff", "commercial", "app", "entitlements", "handoff_tickets", "cost_router"]:
+    for name in [
+        "commercial_handoff", "commercial", "app", "entitlements", "handoff_tickets",
+        "cost_router", "checkout_binding", "checkout_browser_binding",
+    ]:
         sys.modules.pop(name, None)
     module = importlib.import_module("commercial_handoff")
     cfg = module.base.core.registry.get(SLUG)
@@ -43,8 +47,8 @@ def gateway(tmp_path, monkeypatch):
     return module
 
 
-def fake_session():
-    return {"id": SESSION_ID, "status": "complete", "payment_status": "paid", "mode": "payment", "payment_link": PAYMENT_LINK_ID, "payment_intent": PAYMENT_REF, "currency": "jpy", "amount_total": 100, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
+def fake_session(client_reference_id: str | None = None):
+    return {"id": SESSION_ID, "status": "complete", "payment_status": "paid", "mode": "payment", "payment_link": PAYMENT_LINK_ID, "payment_intent": PAYMENT_REF, "currency": "jpy", "amount_total": 100, "client_reference_id": client_reference_id, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
 def fake_payment_link():
@@ -57,12 +61,27 @@ def _extract_transfer_code(page: str) -> str:
     return html.unescape(match.group(1))
 
 
+def _begin_checkout(client: TestClient) -> str:
+    response = client.get(f"/api/buy/{SLUG}", follow_redirects=False)
+    assert response.status_code == 303, response.text
+    location = response.headers["location"]
+    assert location.startswith(PAYMENT_LINK_URL)
+    values = parse_qs(urlsplit(location).query).get("client_reference_id") or []
+    assert len(values) == 1
+    reference = values[0]
+    assert reference.startswith("wb_")
+    assert "client_reference_id=" in location
+    return reference
+
+
 def test_checkout_can_transfer_once_from_embedded_browser_to_safari_without_authority_in_url(gateway, monkeypatch):
     module = gateway
-    monkeypatch.setattr(module.base, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module.base, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
     embedded = TestClient(module.app)
     safari = TestClient(module.app)
+
+    reference = _begin_checkout(embedded)
+    monkeypatch.setattr(module.base, "retrieve_checkout_session", lambda **kwargs: fake_session(reference))
 
     completed = embedded.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert completed.status_code == 200
@@ -89,10 +108,34 @@ def test_checkout_can_transfer_once_from_embedded_browser_to_safari_without_auth
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
 
 
+def test_valid_paid_session_without_initiating_browser_binding_cannot_mint_handoff(gateway, monkeypatch):
+    module = gateway
+    monkeypatch.setattr(module.base, "retrieve_checkout_session", lambda **kwargs: fake_session("wb_public_reference"))
+    monkeypatch.setattr(module.base, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
+    attacker = TestClient(module.app)
+
+    response = attacker.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
+    assert response.status_code == 403
+    assert "購入ブラウザを確認できません" in response.text
+    assert module.base.entitlements.list_for_package(SLUG) == []
+
+
+def test_mismatched_stripe_client_reference_cannot_mint_handoff(gateway, monkeypatch):
+    module = gateway
+    monkeypatch.setattr(module.base, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
+    buyer = TestClient(module.app)
+    _begin_checkout(buyer)
+    monkeypatch.setattr(module.base, "retrieve_checkout_session", lambda **kwargs: fake_session("wb_different_reference"))
+
+    response = buyer.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
+    assert response.status_code == 403
+    assert module.base.entitlements.list_for_package(SLUG) == []
+
+
 def test_missing_checkout_session_id_is_fail_closed_human_readable_html(gateway):
     module = gateway
     response = TestClient(module.app).get(f"/checkout/complete/{SLUG}")
     assert response.status_code == 400
-    assert "購入情報を確認できません" in response.text
+    assert "購入ブラウザを確認できません" in response.text
     assert response.headers["content-type"].startswith("text/html")
     assert "Field required" not in response.text
