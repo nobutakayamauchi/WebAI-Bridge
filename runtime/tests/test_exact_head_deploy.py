@@ -193,3 +193,43 @@ def test_evidence_paths_are_unique_and_read_only(monkeypatch, tmp_path: Path):
     assert p1 != p2
     assert stat.S_IMODE(p1.stat().st_mode) == 0o400
     assert stat.S_IMODE(p2.stat().st_mode) == 0o400
+
+
+class FakeHealthResponse:
+    def __init__(self, *, url: str, status: int = 200, payload: bytes = b'{"status":"ok","app_count":2,"pricing_version":"v"}'):
+        self._url = url
+        self.status = status
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def geturl(self):
+        return self._url
+
+    def read(self, limit):
+        return self._payload
+
+
+def test_https_health_rejects_redirect(monkeypatch):
+    monkeypatch.setattr(
+        m.urllib.request,
+        "urlopen",
+        lambda url, timeout: FakeHealthResponse(url="https://other.invalid/health"),
+    )
+    with pytest.raises(m.GateError, match="redirected"):
+        m.https_health()
+
+
+def test_https_health_requires_application_ready_body(monkeypatch):
+    expected = f"https://{m.DOMAIN}/health"
+    monkeypatch.setattr(
+        m.urllib.request,
+        "urlopen",
+        lambda url, timeout: FakeHealthResponse(url=expected, payload=b'{"status":"bad"}'),
+    )
+    with pytest.raises(m.GateError, match="application readiness"):
+        m.https_health()
