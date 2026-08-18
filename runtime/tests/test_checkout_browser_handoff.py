@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import importlib
 import re
 import sys
@@ -50,26 +51,48 @@ def fake_payment_link():
     return {"id": PAYMENT_LINK_ID, "url": PAYMENT_LINK_URL, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
-def test_checkout_can_transfer_once_from_embedded_browser_to_safari(gateway, monkeypatch):
+def _extract_transfer_code(page: str) -> str:
+    match = re.search(r"<code>(handoff_[^<]+)</code>", page)
+    assert match is not None
+    return html.unescape(match.group(1))
+
+
+def test_checkout_can_transfer_once_from_embedded_browser_to_safari_without_authority_in_url(gateway, monkeypatch):
     module = gateway
     monkeypatch.setattr(module.base, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module.base, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
     embedded = TestClient(module.app)
     safari = TestClient(module.app)
+
     completed = embedded.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
-    assert completed.status_code == 303
-    handoff_url = completed.headers["location"]
-    landing = safari.get(handoff_url)
+    assert completed.status_code == 200
+    assert "history.replaceState" in completed.text
+    assert f"/checkout/handoff/{SLUG}?ticket=" not in completed.text
+    transfer_code = _extract_transfer_code(completed.text)
+
+    clean_handoff_url = f"/checkout/handoff/{SLUG}"
+    landing = safari.get(clean_handoff_url)
     assert landing.status_code == 200
-    match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
-    assert match is not None
-    activate_url = match.group(1).replace("&amp;", "&")
+    assert transfer_code not in landing.text
+    activate_url = f"/checkout/activate/{SLUG}"
     assert safari.get(activate_url, follow_redirects=False).status_code == 405
-    activated = safari.post(activate_url, follow_redirects=False)
+
+    activated = safari.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False)
     assert activated.status_code == 303
     assert module.base.entitlement_cookie_name(SLUG) in activated.headers.get("set-cookie", "")
+    assert "ticket=" not in activated.headers.get("location", "")
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
-    assert embedded.post(activate_url, follow_redirects=False).status_code == 409
+
+    assert embedded.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False).status_code == 409
     assert embedded.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 409
     assert module.base.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
+
+
+def test_missing_checkout_session_id_is_fail_closed_human_readable_html(gateway):
+    module = gateway
+    response = TestClient(module.app).get(f"/checkout/complete/{SLUG}")
+    assert response.status_code == 400
+    assert "購入情報を確認できません" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Field required" not in response.text
