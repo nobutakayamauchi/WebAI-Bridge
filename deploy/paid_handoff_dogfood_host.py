@@ -10,7 +10,13 @@ from free_dogfood_host import cloudflared_hint, ensure_private_state_dir, ensure
 from paid_dogfood_host import ensure_private_child_dir, ensure_private_secret, build_paid_env, prepare_package
 
 
-def run_handoff_json_preflight(*, python: Path, runtime_dir: Path, env: dict[str, str]) -> dict:
+def run_handoff_json_preflight(
+    *,
+    python: Path,
+    runtime_dir: Path,
+    env: dict[str, str],
+    allow_multiple_packages: bool = False,
+) -> dict:
     completed = subprocess.run(
         [str(python), str(runtime_dir / "deployment_preflight_handoff.py"), "--json"],
         cwd=runtime_dir,
@@ -28,8 +34,18 @@ def run_handoff_json_preflight(*, python: Path, runtime_dir: Path, env: dict[str
         raise RuntimeError(f"browser-handoff deployment preflight failed: {findings or 'UNKNOWN'}")
     if result.get("validated_route_surface") != "commercial_handoff:app":
         raise RuntimeError("browser-handoff deployment preflight did not validate the actual route surface")
-    if result.get("active_packages") != 1 or result.get("active_paid_packages") != 1:
+
+    active_packages = int(result.get("active_packages") or 0)
+    active_paid_packages = int(result.get("active_paid_packages") or 0)
+    if allow_multiple_packages:
+        # Creator Studio is a multi-product surface. Keep the original paid
+        # dogfood package as a bootstrap invariant, but do not make successful
+        # creator publishing impossible on the next restart.
+        if active_packages < 1 or active_paid_packages < 1 or active_paid_packages > active_packages:
+            raise RuntimeError("Creator Studio host requires at least one active package and one active paid package")
+    elif active_packages != 1 or active_paid_packages != 1:
         raise RuntimeError("browser-handoff dogfood requires exactly one active package and one active paid package")
+
     if env.get("WEB_AI_STUDIO_ENABLED") == "1" and not result.get("creator_auth_protected"):
         raise RuntimeError("Creator Studio was requested but creator-only authentication did not pass preflight")
     return result
@@ -113,7 +129,12 @@ def main() -> int:
             env["WEB_AI_STUDIO_ENABLED"] = "0"
             env["WEB_AI_CREATOR_AUTH_ENABLED"] = "0"
 
-        preflight = run_handoff_json_preflight(python=python, runtime_dir=runtime_dir, env=env)
+        preflight = run_handoff_json_preflight(
+            python=python,
+            runtime_dir=runtime_dir,
+            env=env,
+            allow_multiple_packages=bool(args.creator_studio),
+        )
         hint = cloudflared_hint(port)
     except (ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(json.dumps({"status": "FAIL", "error": str(exc), "secrets_in_output": False}, ensure_ascii=False, indent=2))
@@ -133,6 +154,7 @@ def main() -> int:
         "handoff_ttl_seconds": 600,
         "creator_studio_enabled": bool(args.creator_studio),
         "creator_auth_protected": bool(preflight.get("creator_auth_protected")),
+        "creator_multi_product_host": bool(args.creator_studio),
         "creator_login_path": "/creator/login" if args.creator_studio else None,
         "creator_studio_path": "/studio" if args.creator_studio else None,
         "creator_password_file": str(creator_password_path) if creator_password_path else None,
