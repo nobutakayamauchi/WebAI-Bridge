@@ -15,10 +15,10 @@ SAFE_ABSOLUTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 COMMERCIAL_ENV_FILE = "/etc/webai-bridge/webai-bridge.env"
 TRUSTED_EXEC_PATH = "/usr/bin:/bin"
 
-# EnvironmentFile= has higher precedence than Environment= in systemd.  These
+# EnvironmentFile= has higher precedence than Environment= in systemd. These
 # names therefore cannot be protected by placing Environment= assignments after
-# EnvironmentFile=.  They are removed at systemd's final environment assembly
-# step with UnsetEnvironment= and then canonical values are injected by the
+# EnvironmentFile=. They are removed at systemd's final environment assembly
+# step with UnsetEnvironment= and canonical controls are injected by the
 # absolute /usr/bin/env command in ExecStartPre=/ExecStart=.
 EXECUTION_HAZARD_ENV_KEYS = (
     "LD_PRELOAD",
@@ -141,10 +141,16 @@ def _fixed_runtime_environment(values: dict, *, creator_studio: bool) -> dict[st
         "WEB_AI_WORKING_DIRECTORY": runtime,
         "WEB_AI_ROUTE_SURFACE": profile["route_surface"],
         "WEB_AI_CONFIG_DIR": _config_dir(values, creator_studio=creator_studio),
+        "WEB_AI_PRICING_FILE": f"{runtime}/pricing.json",
         "WEB_AI_ENTITLEMENT_DB": f"{state}/entitlements.sqlite3",
         "WEB_AI_LEDGER_PATH": f"{state}/ledger.sqlite3",
         "WEB_AI_HANDOFF_DB": f"{state}/handoff.sqlite3",
         "WEB_AI_CHECKOUT_STATE_DB": f"{state}/checkout-state.sqlite3",
+        "WEB_AI_REQUESTS_PER_MINUTE": "20",
+        "WEB_AI_BYOK_SESSION_TTL_SECONDS": "900",
+        "WEB_AI_BYOK_SESSION_MAX": "1000",
+        "WEB_AI_HANDOFF_TTL_SECONDS": "600",
+        "WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS": "31536000",
         "WEB_AI_DIAGNOSTICS_ENABLED": "0",
         "WEB_AI_STUDIO_ENABLED": "1" if profile["studio_enabled"] else "0",
         "WEB_AI_CREATOR_AUTH_ENABLED": "1" if profile["creator_auth_enabled"] else "0",
@@ -181,7 +187,7 @@ def render_systemd(values: dict, *, creator_studio: bool = False) -> str:
     unset_line = "UnsetEnvironment=" + " ".join(dict.fromkeys(protected_names))
     exec_env = _exec_environment_prefix(fixed)
 
-    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied Stripe/provider secrets are loaded from this file.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\n# EnvironmentFile= overrides Environment= in systemd.  Keep the canonical\n# assignments visible for inspection, but remove every protected name at the\n# final systemd environment-assembly step and rebind it in /usr/bin/env below.\n{fixed_lines}{unset_line}\nExecStartPre={exec_env} {runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Browser authority is never transported in a query string. Stripe completion\n# still carries a non-authoritative Checkout Session locator in its success URL,\n# and production does not need raw request-target retention. Keep Uvicorn access\n# logging disabled until a structured redacted request log exists.\nExecStart={exec_env} {runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
+    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied secrets are loaded from this file; execution/security policy\n# is removed at final systemd environment assembly and rebound below.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\n{fixed_lines}{unset_line}\nExecStartPre={exec_env} {runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Browser authority is never transported in a query string. Stripe completion\n# still carries a non-authoritative Checkout Session locator in its success URL,\n# and production does not need raw request-target retention. Keep Uvicorn access\n# logging disabled until a structured redacted request log exists.\nExecStart={exec_env} {runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
 
 
 def render_caddy(values: dict) -> str:
@@ -211,6 +217,13 @@ def render_manifest(values: dict, *, creator_studio: bool = False) -> str:
         "uvicorn_access_log_enabled": False,
         "query_authority_retention": False,
         "environment_authority": "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1",
+        "runtime_policy": {
+            "requests_per_minute": 20,
+            "byok_session_ttl_seconds": 900,
+            "byok_session_max": 1000,
+            "handoff_ttl_seconds": 600,
+            "entitlement_cookie_max_age_seconds": 31536000,
+        },
         "state_databases": {
             "entitlements": f"{values['state_dir']}/entitlements.sqlite3",
             "ledger": f"{values['state_dir']}/ledger.sqlite3",
