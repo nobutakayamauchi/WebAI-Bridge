@@ -57,6 +57,25 @@ EXECUTION_HAZARD_ENV_KEYS = (
     "OPENSSL_MODULES",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID",
+    "OPENAI_CUSTOM_HEADERS",
+    "OPENAI_LOG",
+    "WEB_CONCURRENCY",
+    "FORWARDED_ALLOW_IPS",
+    "UVICORN_RELOAD",
+    "UVICORN_WORKERS",
+    "UVICORN_ENV_FILE",
+    "UVICORN_APP_DIR",
+    "UVICORN_FACTORY",
+    "UVICORN_PROXY_HEADERS",
+    "UVICORN_FORWARDED_ALLOW_IPS",
+    "UVICORN_ACCESS_LOG",
+    "UVICORN_SSL_KEYFILE",
+    "UVICORN_SSL_CERTFILE",
+    "UVICORN_SSL_CA_CERTS",
+    "UVICORN_ROOT_PATH",
 )
 
 
@@ -177,6 +196,13 @@ def _exec_environment_prefix(fixed: dict[str, str]) -> str:
     return "/usr/bin/env " + " ".join(assignments)
 
 
+def _production_server_command(runtime: str, profile: dict) -> str:
+    return (
+        f"{runtime}/.venv/bin/python {runtime}/production_server.py "
+        f"{profile['entrypoint']} --no-access-log"
+    )
+
+
 def render_systemd(values: dict, *, creator_studio: bool = False) -> str:
     runtime = values["runtime_dir"]
     state = values["state_dir"]
@@ -187,7 +213,18 @@ def render_systemd(values: dict, *, creator_studio: bool = False) -> str:
     unset_line = "UnsetEnvironment=" + " ".join(dict.fromkeys(protected_names))
     exec_env = _exec_environment_prefix(fixed)
 
-    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied secrets are loaded from this file; execution/security policy\n# is removed at final systemd environment assembly and rebound below.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\n{fixed_lines}{unset_line}\nExecStartPre={exec_env} {runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Browser authority is never transported in a query string. Stripe completion\n# still carries a non-authoritative Checkout Session locator in its success URL,\n# and production does not need raw request-target retention. Keep Uvicorn access\n# logging disabled until a structured redacted request log exists.\nExecStart={exec_env} {runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
+    if creator_studio:
+        server_command = _production_server_command(runtime, profile)
+    else:
+        # Buyer-only remains deterministic on the direct CLI surface; Hosted v1
+        # production deployment uses Creator Studio and the pinned launcher.
+        server_command = (
+            f"{runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 "
+            "--port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 "
+            "--workers 1 --no-access-log"
+        )
+
+    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied secrets are loaded from this file; execution/security policy\n# is removed at final systemd environment assembly and rebound below.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\n{fixed_lines}{unset_line}\nExecStartPre={exec_env} {runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Hosted v1 Creator Studio uses a programmatic single-worker launcher so Uvicorn\n# CLI environment variables cannot silently grow workers/reload or alter proxy\n# trust. The inert command tokens remain visible for runtime identity evidence.\nExecStart={exec_env} {server_command}\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
 
 
 def render_caddy(values: dict) -> str:
@@ -217,6 +254,7 @@ def render_manifest(values: dict, *, creator_studio: bool = False) -> str:
         "uvicorn_access_log_enabled": False,
         "query_authority_retention": False,
         "environment_authority": "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1",
+        "server_authority": "PROGRAMMATIC_SINGLE_WORKER_V1" if creator_studio else "CLI_SINGLE_WORKER_V1",
         "runtime_policy": {
             "requests_per_minute": 20,
             "byok_session_ttl_seconds": 900,
