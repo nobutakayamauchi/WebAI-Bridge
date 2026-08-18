@@ -194,6 +194,33 @@ def test_root_owned_path_rejects_non_root_owner(monkeypatch, tmp_path: Path):
         m._check_root_owned_path(SimpleNamespace(GateError=GateError), path, label="fixture")
 
 
+def test_root_owned_tree_rejects_symlink_when_required(monkeypatch, tmp_path: Path):
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    target.write_text("x", encoding="utf-8")
+    link = root / "link"
+    link.symlink_to(target)
+
+    original_lstat = Path.lstat
+
+    def fake_lstat(self):
+        info = original_lstat(self)
+        return SimpleNamespace(
+            st_uid=0,
+            st_mode=info.st_mode,
+        )
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+    with pytest.raises(GateError, match="must not contain symlinks"):
+        m._check_root_owned_tree(
+            SimpleNamespace(GateError=GateError),
+            root,
+            label="fixture",
+            reject_symlinks=True,
+        )
+
+
 def test_prepare_overlay_requires_controller_and_hash_consistency(monkeypatch, tmp_path: Path):
     release = Path("/opt/webai-bridge-releases") / ("a" * 40)
     service = tmp_path / "webai-bridge.service"
