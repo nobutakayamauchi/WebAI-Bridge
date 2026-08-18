@@ -14,8 +14,8 @@ HOSTSAFE_PATH = "deploy/exact_head_deploy_hostsafe.py"
 READY_PATH = "deploy/exact_head_deploy_hostsafe_ready.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
 
-TARGET_SHA = "89e80913a613cb98f9af685eb15ca7ed68505b7c"
-TARGET_TREE = "48ccfef494681f06bfe42e3686c9d083faeb087c"
+TARGET_SHA = "fa95d97047b6e75550cea4a6d7fb669e215d7393"
+TARGET_TREE = "18ba28507f9d70461769ef60ff9ab7624996e76d"
 ENV_AUTHORITY_ID = "SYSTEMD_FINAL_UNSET_EXEC_REBIND_GIT_SCOPED_V1"
 PREFLIGHT_TIMEOUT_SECONDS = 30
 STRIPE_ACCEPTANCE_TIMEOUT_SECONDS = 60
@@ -59,6 +59,14 @@ EXECUTION_HAZARD_ENV_KEYS = (
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
 )
+
+EXPECTED_RUNTIME_POLICY = {
+    "requests_per_minute": 20,
+    "byok_session_ttl_seconds": 900,
+    "byok_session_max": 1000,
+    "handoff_ttl_seconds": 600,
+    "entitlement_cookie_max_age_seconds": 31536000,
+}
 
 
 def _run_git(*args: str) -> str:
@@ -126,10 +134,16 @@ def _fixed_runtime_environment(base) -> dict[str, str]:
         "WEB_AI_WORKING_DIRECTORY": runtime,
         "WEB_AI_ROUTE_SURFACE": "commercial_handoff:app",
         "WEB_AI_CONFIG_DIR": f"{state}/apps",
+        "WEB_AI_PRICING_FILE": f"{runtime}/pricing.json",
         "WEB_AI_ENTITLEMENT_DB": f"{state}/entitlements.sqlite3",
         "WEB_AI_LEDGER_PATH": f"{state}/ledger.sqlite3",
         "WEB_AI_HANDOFF_DB": f"{state}/handoff.sqlite3",
         "WEB_AI_CHECKOUT_STATE_DB": f"{state}/checkout-state.sqlite3",
+        "WEB_AI_REQUESTS_PER_MINUTE": "20",
+        "WEB_AI_BYOK_SESSION_TTL_SECONDS": "900",
+        "WEB_AI_BYOK_SESSION_MAX": "1000",
+        "WEB_AI_HANDOFF_TTL_SECONDS": "600",
+        "WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS": "31536000",
         "WEB_AI_DIAGNOSTICS_ENABLED": "0",
         "WEB_AI_STUDIO_ENABLED": "1",
         "WEB_AI_CREATOR_AUTH_ENABLED": "1",
@@ -195,6 +209,8 @@ def _validate_target_environment_authority(base, service: Path, manifest: Path) 
     data = json.loads(manifest.read_text(encoding="utf-8"))
     if data.get("environment_authority") != "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1":
         raise base.GateError("deployment manifest lost effective environment authority identity")
+    if data.get("runtime_policy") != EXPECTED_RUNTIME_POLICY:
+        raise base.GateError("deployment manifest runtime policy authority mismatch")
 
 
 def _scope_preflight_git_trust(base, service: Path) -> str:
@@ -356,6 +372,7 @@ def _install_envsafe_overlay(base, host, controller_revision: str) -> None:
             "candidate_service_sha256": candidate_hash,
             "service_overlay": ENV_AUTHORITY_ID,
             "environment_authority": "SYSTEMD_FINAL_UNSET_THEN_EXEC_REBIND_V1",
+            "runtime_policy": dict(EXPECTED_RUNTIME_POLICY),
             "git_trust_scope": "ExecStartPre only",
             "git_safe_directory": str(base.RELEASE),
             "execution_hazard_unset": list(EXECUTION_HAZARD_ENV_KEYS),
