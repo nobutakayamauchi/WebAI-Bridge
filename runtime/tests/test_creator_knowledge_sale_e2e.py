@@ -9,6 +9,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
@@ -71,7 +72,7 @@ def _studio_payload(model: str) -> dict:
     }
 
 
-def _fake_checkout_session() -> dict:
+def _fake_checkout_session(client_reference_id: str | None = None) -> dict:
     return {
         "id": SESSION_ID,
         "status": "complete",
@@ -81,6 +82,7 @@ def _fake_checkout_session() -> dict:
         "payment_intent": PAYMENT_REF,
         "currency": "jpy",
         "amount_total": PRICE_JPY,
+        "client_reference_id": client_reference_id,
         "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"},
     }
 
@@ -97,6 +99,14 @@ def _extract_transfer_code(page: str) -> str:
     match = re.search(r"<code>(handoff_[^<]+)</code>", page)
     assert match is not None
     return html.unescape(match.group(1))
+
+
+def _begin_checkout(client: TestClient) -> str:
+    response = client.get(f"/api/buy/{SLUG}", follow_redirects=False)
+    assert response.status_code == 303, response.text
+    values = parse_qs(urlsplit(response.headers["location"]).query).get("client_reference_id") or []
+    assert len(values) == 1
+    return values[0]
 
 
 def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp_path: Path, monkeypatch) -> None:
@@ -126,7 +136,7 @@ def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp
 
     for name in [
         "commercial_handoff", "commercial", "app", "entitlements", "handoff_tickets",
-        "checkout_state", "cost_router", "byok_sessions",
+        "checkout_state", "cost_router", "byok_sessions", "checkout_binding", "checkout_browser_binding",
     ]:
         sys.modules.pop(name, None)
 
@@ -200,13 +210,17 @@ def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp
     assert active["status"] == "active"
     assert active["access"]["commercial_enforcement"] == "ENTITLEMENT_ENFORCED"
 
-    # 4) SALE / CHECKOUT -> a paid Checkout Session creates buyer entitlement,
-    # but only the claiming browser receives authority. Handoff authority is
-    # transferred in a POST body, never a query string.
-    monkeypatch.setattr(gateway.base, "retrieve_checkout_session", lambda **kwargs: _fake_checkout_session())
+    # 4) SALE / CHECKOUT -> only the browser that initiated the Payment Link can
+    # turn a verified Stripe completion into a one-time body handoff code.
     monkeypatch.setattr(gateway.base, "retrieve_payment_link", lambda **kwargs: _fake_payment_link())
-
     payment_browser = TestClient(gateway.app)
+    client_reference_id = _begin_checkout(payment_browser)
+    monkeypatch.setattr(
+        gateway.base,
+        "retrieve_checkout_session",
+        lambda **kwargs: _fake_checkout_session(client_reference_id),
+    )
+
     completed = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert completed.status_code == 200, completed.text
     assert f"/checkout/handoff/{SLUG}?ticket=" not in completed.text
@@ -273,6 +287,11 @@ def test_creator_studio_to_three_artifact_activation_sale_and_knowledge_chat(tmp
     assert body["knowledge"]["chunks_used"] >= 1
     assert calls
 
-    # Revocation remains authoritative after sale.
+    # Revocation remains authoritative after sale even while BYOK is connected.
     assert gateway.base.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
     assert buyer.get(f"/apps/{SLUG}/public-config").status_code == 401
+    denied = buyer.post(
+        "/api/chat",
+        json={"slug": SLUG, "message": "still authorized?", "history": [], "payer_mode": "BYOK"},
+    )
+    assert denied.status_code == 401
