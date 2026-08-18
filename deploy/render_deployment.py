@@ -70,9 +70,9 @@ def _deployment_profile(*, creator_studio: bool) -> dict:
         }
     return {
         "profile": "BUYER_ONLY_COMMERCIAL_V1",
-        "route_surface": "commercial:app",
-        "entrypoint": "commercial:app",
-        "preflight": "deployment_preflight.py",
+        "route_surface": "commercial_bound:app",
+        "entrypoint": "commercial_bound:app",
+        "preflight": "deployment_preflight_bound.py",
         "studio_enabled": False,
         "creator_auth_enabled": False,
         "package_authority": "RUNTIME_DIR",
@@ -100,7 +100,7 @@ def render_systemd(values: dict, *, creator_studio: bool = False) -> str:
     else:
         creator_lines = "Environment=WEB_AI_CREATOR_AUTH_ENABLED=0\n"
 
-    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied Stripe/provider secret values are loaded first.\n# The locked environment-file identity and security values below intentionally\n# prevent an alternate path/profile from being injected through that file.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\nEnvironment=WEB_AI_ENV_FILE={COMMERCIAL_ENV_FILE}\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE={profile['route_surface']}\nEnvironment=WEB_AI_CONFIG_DIR={config_dir}\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_HANDOFF_DB={state}/handoff.sqlite3\nEnvironment=WEB_AI_CHECKOUT_STATE_DB={state}/checkout-state.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED={1 if profile['studio_enabled'] else 0}\n{creator_lines}Environment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nExecStartPre={runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Uvicorn's default access log records the full request target including query\n# strings. Browser handoff tickets are one-time authority tokens carried in a\n# query parameter, so production disables that log rather than retaining them.\nExecStart={runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
+    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied Stripe/provider secret values are loaded first.\n# The locked environment-file identity and security values below intentionally\n# prevent an alternate path/profile from being injected through that file.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\nEnvironment=WEB_AI_ENV_FILE={COMMERCIAL_ENV_FILE}\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE={profile['route_surface']}\nEnvironment=WEB_AI_CONFIG_DIR={config_dir}\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_HANDOFF_DB={state}/handoff.sqlite3\nEnvironment=WEB_AI_CHECKOUT_STATE_DB={state}/checkout-state.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED={1 if profile['studio_enabled'] else 0}\n{creator_lines}Environment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nExecStartPre={runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Browser authority is never transported in a query string. Stripe completion\n# still carries a non-authoritative Checkout Session locator in its success URL,\n# and production does not need raw request-target retention. Keep Uvicorn access\n# logging disabled until a structured redacted request log exists.\nExecStart={runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
 
 
 def render_caddy(values: dict) -> str:
@@ -126,6 +126,7 @@ def render_manifest(values: dict, *, creator_studio: bool = False) -> str:
         "creator_auth_mode": "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1" if creator_studio else "DISABLED",
         "diagnostics_public": False,
         "insecure_http_allowed": False,
+        "checkout_browser_binding": "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1",
         "uvicorn_access_log_enabled": False,
         "query_authority_retention": False,
         "state_databases": {
