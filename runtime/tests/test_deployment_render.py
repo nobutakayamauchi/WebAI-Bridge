@@ -56,6 +56,12 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
         "PYTHONUSERBASE",
         "PYTHONNOUSERSITE",
         "PATH",
+        "OPENAI_BASE_URL",
+        "OPENAI_CUSTOM_HEADERS",
+        "OPENAI_LOG",
+        "WEB_CONCURRENCY",
+        "UVICORN_RELOAD",
+        "UVICORN_WORKERS",
         "WEB_AI_ENV_FILE",
         "WEB_AI_ROUTE_SURFACE",
         "WEB_AI_CONFIG_DIR",
@@ -74,6 +80,7 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
     assert "ExecStart=/usr/bin/env PATH=/usr/bin:/bin PYTHONNOUSERSITE=1" in unit
     assert "/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial_bound:app" in unit
     assert "--forwarded-allow-ips=127.0.0.1" in unit
+    assert "--workers 1" in unit
     assert "--no-access-log" in unit
     assert "UMask=0077" in unit
 
@@ -82,6 +89,7 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
     assert manifest["route_surface"] == "commercial_bound:app"
     assert manifest["checkout_browser_binding"] == "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1"
     assert manifest["environment_authority"] == "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1"
+    assert manifest["server_authority"] == "CLI_SINGLE_WORKER_V1"
 
 
 def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_and_locked_creator_auth(tmp_path):
@@ -102,9 +110,11 @@ def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_a
     assert "WEB_AI_CONFIG_DIR=/var/lib/webai-bridge/apps" in unit
     assert "/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/deployment_preflight_handoff.py" in unit
     assert "ExecStart=/usr/bin/env PATH=/usr/bin:/bin PYTHONNOUSERSITE=1" in unit
-    assert "/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial_handoff:app" in unit
+    assert "/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/production_server.py commercial_handoff:app --no-access-log" in unit
+    assert "/opt/webai-bridge/runtime/.venv/bin/uvicorn" not in next(
+        line for line in unit.splitlines() if line.startswith("ExecStart=")
+    )
     assert "WEB_AI_ALLOW_INSECURE_HTTP=0" in unit
-    assert "--no-access-log" in unit
     assert "ProtectSystem=strict" in unit
     assert "ReadWritePaths=/var/lib/webai-bridge" in unit
 
@@ -112,6 +122,10 @@ def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_a
     assert "WEB_AI_CREATOR_PASSWORD_FILE" in unset
     assert "WEB_AI_CREATOR_SESSION_SECRET_FILE" in unset
     assert "WEB_AI_CREATOR_SESSION_TTL_SECONDS" in unset
+    assert "OPENAI_BASE_URL" in unset
+    assert "WEB_CONCURRENCY" in unset
+    assert "UVICORN_RELOAD" in unset
+    assert "UVICORN_WORKERS" in unset
 
     manifest = json.loads(Path(written["deployment-manifest.json"]).read_text(encoding="utf-8"))
     assert manifest["schema"] == "webai-deployment-v1"
@@ -125,6 +139,7 @@ def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_a
     assert manifest["creator_auth_mode"] == "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1"
     assert manifest["checkout_browser_binding"] == "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1"
     assert manifest["environment_authority"] == "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1"
+    assert manifest["server_authority"] == "PROGRAMMATIC_SINGLE_WORKER_V1"
     assert manifest["creator_auth_files"] == {
         "password": "/var/lib/webai-bridge/creator-password.secret",
         "session_secret": "/var/lib/webai-bridge/creator-session.secret",
