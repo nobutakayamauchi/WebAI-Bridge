@@ -12,6 +12,7 @@ DOMAIN_RE = re.compile(
 REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 UNIX_NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 SAFE_ABSOLUTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+COMMERCIAL_ENV_FILE = "/etc/webai-bridge/webai-bridge.env"
 
 
 def _absolute(path_value: str, label: str) -> Path:
@@ -79,10 +80,6 @@ def _deployment_profile(*, creator_studio: bool) -> dict:
 
 
 def _config_dir(values: dict, *, creator_studio: bool) -> str:
-    # Creator direct-publish must never mutate the deployed Git/runtime tree.
-    # The systemd sandbox permits writes only under state_dir, so mutable package
-    # authority belongs there. Buyer-only deployments may keep checked-in or
-    # operator-installed read-only package authority under runtime/apps.
     if creator_studio:
         return f"{values['state_dir']}/apps"
     return f"{values['runtime_dir']}/apps"
@@ -103,7 +100,7 @@ def render_systemd(values: dict, *, creator_studio: bool = False) -> str:
     else:
         creator_lines = "Environment=WEB_AI_CREATOR_AUTH_ENABLED=0\n"
 
-    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied Stripe/provider secret values are loaded first.\n# Locked deployment identity/security values below intentionally override\n# same-named entries from this file.\nEnvironmentFile=-/etc/webai-bridge/webai-bridge.env\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE={profile['route_surface']}\nEnvironment=WEB_AI_CONFIG_DIR={config_dir}\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_HANDOFF_DB={state}/handoff.sqlite3\nEnvironment=WEB_AI_CHECKOUT_STATE_DB={state}/checkout-state.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED={1 if profile['studio_enabled'] else 0}\n{creator_lines}Environment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nExecStartPre={runtime}/.venv/bin/python {runtime}/{profile['preflight']}\nExecStart={runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
+    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied Stripe/provider secret values are loaded first.\n# The locked environment-file identity and security values below intentionally\n# prevent an alternate path/profile from being injected through that file.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\nEnvironment=WEB_AI_ENV_FILE={COMMERCIAL_ENV_FILE}\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE={profile['route_surface']}\nEnvironment=WEB_AI_CONFIG_DIR={config_dir}\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_HANDOFF_DB={state}/handoff.sqlite3\nEnvironment=WEB_AI_CHECKOUT_STATE_DB={state}/checkout-state.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED={1 if profile['studio_enabled'] else 0}\n{creator_lines}Environment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nExecStartPre={runtime}/.venv/bin/python {runtime}/{profile['preflight']}\nExecStart={runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
 
 
 def render_caddy(values: dict) -> str:
@@ -120,6 +117,7 @@ def render_manifest(values: dict, *, creator_studio: bool = False) -> str:
         "state_dir": values["state_dir"],
         "config_dir": _config_dir(values, creator_studio=creator_studio),
         "package_authority": profile["package_authority"],
+        "commercial_env_file": COMMERCIAL_ENV_FILE,
         "revision": values["revision"],
         "service_unit": "webai-bridge.service",
         "route_surface": profile["route_surface"],
