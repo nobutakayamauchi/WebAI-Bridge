@@ -23,7 +23,7 @@ def _values() -> dict:
     )
 
 
-def test_production_uvicorn_access_log_is_disabled_for_handoff_query_authority(tmp_path: Path) -> None:
+def test_production_uvicorn_access_log_is_disabled_for_checkout_locator_defense_in_depth(tmp_path: Path) -> None:
     written = render.write_outputs(_values(), tmp_path, creator_studio=True)
     unit = Path(written["webai-bridge.service"]).read_text(encoding="utf-8")
 
@@ -34,12 +34,13 @@ def test_production_uvicorn_access_log_is_disabled_for_handoff_query_authority(t
     manifest = json.loads(Path(written["deployment-manifest.json"]).read_text(encoding="utf-8"))
     assert manifest["uvicorn_access_log_enabled"] is False
     assert manifest["query_authority_retention"] is False
+    assert manifest["checkout_browser_binding"] == "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1"
 
 
-def test_buyer_only_production_also_does_not_retain_query_strings(tmp_path: Path) -> None:
+def test_buyer_only_production_also_uses_bound_surface_without_raw_request_retention(tmp_path: Path) -> None:
     written = render.write_outputs(_values(), tmp_path, creator_studio=False)
     unit = Path(written["webai-bridge.service"]).read_text(encoding="utf-8")
 
     exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
-    assert "commercial:app" in exec_start
+    assert "commercial_bound:app" in exec_start
     assert "--no-access-log" in exec_start
