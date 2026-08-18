@@ -32,7 +32,7 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
     assert "EnvironmentFile=-/etc/webai-bridge/webai-bridge.env" in unit
     assert "Environment=WEB_AI_ENV_FILE=/etc/webai-bridge/webai-bridge.env" in unit
     assert "Environment=DEPLOYED_REVISION=" + ("a" * 40) in unit
-    assert "Environment=WEB_AI_ROUTE_SURFACE=commercial:app" in unit
+    assert "Environment=WEB_AI_ROUTE_SURFACE=commercial_bound:app" in unit
     assert "Environment=WEB_AI_CONFIG_DIR=/opt/webai-bridge/runtime/apps" in unit
     assert "Environment=WEB_AI_STUDIO_ENABLED=0" in unit
     assert "Environment=WEB_AI_CREATOR_AUTH_ENABLED=0" in unit
@@ -40,10 +40,16 @@ def test_renderer_pins_commercial_entrypoint_revision_and_fail_closed_settings(t
     assert "Environment=WEB_AI_ALLOW_INSECURE_HTTP=0" in unit
     assert "Environment=WEB_AI_HANDOFF_DB=/var/lib/webai-bridge/handoff.sqlite3" in unit
     assert "Environment=WEB_AI_CHECKOUT_STATE_DB=/var/lib/webai-bridge/checkout-state.sqlite3" in unit
-    assert "ExecStartPre=/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/deployment_preflight.py" in unit
-    assert "ExecStart=/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial:app" in unit
+    assert "ExecStartPre=/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/deployment_preflight_bound.py" in unit
+    assert "ExecStart=/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial_bound:app" in unit
     assert "--forwarded-allow-ips=127.0.0.1" in unit
+    assert "--no-access-log" in unit
     assert "UMask=0077" in unit
+
+    manifest = json.loads(Path(written["deployment-manifest.json"]).read_text(encoding="utf-8"))
+    assert manifest["profile"] == "BUYER_ONLY_COMMERCIAL_V1"
+    assert manifest["route_surface"] == "commercial_bound:app"
+    assert manifest["checkout_browser_binding"] == "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1"
 
 
 def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_and_locked_creator_auth(tmp_path):
@@ -62,6 +68,7 @@ def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_a
     assert "ExecStartPre=/opt/webai-bridge/runtime/.venv/bin/python /opt/webai-bridge/runtime/deployment_preflight_handoff.py" in unit
     assert "ExecStart=/opt/webai-bridge/runtime/.venv/bin/uvicorn commercial_handoff:app" in unit
     assert "WEB_AI_ALLOW_INSECURE_HTTP=0" in unit
+    assert "--no-access-log" in unit
     assert "ProtectSystem=strict" in unit
     assert "ReadWritePaths=/var/lib/webai-bridge" in unit
 
@@ -75,6 +82,7 @@ def test_creator_studio_renderer_uses_writable_state_authority_handoff_surface_a
     assert manifest["creator_studio_enabled"] is True
     assert manifest["creator_auth_required"] is True
     assert manifest["creator_auth_mode"] == "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1"
+    assert manifest["checkout_browser_binding"] == "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1"
     assert manifest["creator_auth_files"] == {
         "password": "/var/lib/webai-bridge/creator-password.secret",
         "session_secret": "/var/lib/webai-bridge/creator-session.secret",
