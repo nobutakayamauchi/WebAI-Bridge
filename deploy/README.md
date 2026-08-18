@@ -1,26 +1,53 @@
-# WebAI Bridge — First Deployment Runbook
+# WebAI Bridge — Fixed-Domain Hosted v1 Runbook
 
-Status: `READY_FOR_EXTERNAL_DOGFOOD / NOT_DEPLOYED`
+Status: `HOSTED_V1_CANDIDATE / EXTERNAL_FIXED_DOMAIN_REVALIDATION_REQUIRED`
 
-This runbook intentionally stops where real infrastructure evidence begins.
+This runbook prepares the first stable public-host deployment. It intentionally stops where real infrastructure evidence begins.
+
+## Deployment profiles
+
+Two deterministic profiles exist.
+
+### Buyer-only
+
+```text
+commercial:app
+Creator Studio: OFF
+Package authority: runtime/apps (read-only to the service)
+```
+
+Use this when packages are prepared by an operator outside the running service.
+
+### Creator-managed
+
+```text
+commercial_handoff:app
+Creator Studio: ON + creator authentication required
+Package authority: state/apps
+Direct publish: BUY_ONCE + HOSTED_ONLY + BYOK + PACKAGE_TEXT Knowledge
+```
+
+Use this when the creator must add products from the smartphone Studio without SSH file transfer.
+
+The creator-managed profile keeps mutable package authority under the private state tree because the service uses `ProtectSystem=strict` and only the state directory is writable.
 
 ## Required external inputs
 
 Before a public deployment can be claimed, resolve:
 
 - an Ubuntu/Linux host you control;
-- a public hostname for the AI endpoint;
+- a public hostname;
 - DNS pointing that hostname to the host;
-- public HTTPS termination/reverse proxy;
-- one paid-hosted test Package;
-- one test buyer entitlement;
-- optionally one buyer-owned provider API key for a single live BYOK call.
+- Caddy or equivalent public HTTPS termination;
+- creator-owned Stripe Payment Link(s);
+- Stripe server/restricted API key and webhook signing secret;
+- one buyer-owned provider API key for the live BYOK acceptance call.
 
-Do not put entitlement tokens or provider API keys into Git, Package JSON, generated deployment files, shell history, or command-line arguments.
+Do not put creator passwords, Stripe secrets, entitlement tokens, or buyer provider keys into Git, Package JSON, generated deployment files, shell history, URLs, or issue/PR text.
 
 ## 1. Host layout
 
-Canonical first deployment layout:
+Recommended layout:
 
 ```text
 /opt/webai-bridge/
@@ -30,33 +57,42 @@ Canonical first deployment layout:
   ...
 
 /var/lib/webai-bridge/
+  apps/                         # creator-managed package authority
   entitlements.sqlite3
   ledger.sqlite3
+  handoff.sqlite3
+  checkout-state.sqlite3
+  creator-password.secret       # creator-managed profile only
+  creator-session.secret        # creator-managed profile only
 ```
 
 The service account is `webai` by default.
 
-Create the state directory as a private service-owned directory. The application and deployment preflight also tighten/check the SQLite files themselves.
+Create the state directory as a private service-owned directory. For creator-managed deployment, create `apps/` as owner-only and service-writable.
 
-The current Package installer writes newly installed Package JSON and Instructions owner-only.
+Example shell shape; adapt ownership to the actual service account:
 
-## 2. Put the exact repository revision on the host
+```bash
+sudo install -d -m 0700 -o webai -g webai /var/lib/webai-bridge
+sudo install -d -m 0700 -o webai -g webai /var/lib/webai-bridge/apps
+```
+
+## 2. Pin the exact repository revision
 
 Deploy a specific Git commit, not an unspecified moving branch state.
 
-From the deployed repository root:
-
 ```bash
+cd /opt/webai-bridge
 git rev-parse HEAD
 ```
 
-Keep that exact full SHA. Deployment config rendering embeds it as `DEPLOYED_REVISION`, and startup preflight compares it to local Git HEAD when Git metadata is present.
+Keep the full SHA. Rendering embeds it as `DEPLOYED_REVISION`; startup preflight compares it to local Git HEAD when Git metadata exists.
 
 ```text
 CODE PRESENT != DEPLOYMENT IDENTITY
 ```
 
-## 3. Create the runtime virtual environment
+## 3. Runtime environment
 
 From `/opt/webai-bridge/runtime`:
 
@@ -70,28 +106,30 @@ Do not start the public service yet.
 
 ## 4. Render deployment files
 
-From repository root:
+Buyer-only:
 
 ```bash
+cd /opt/webai-bridge
 python3 deploy/render_deployment.py \
   --domain ai.example.com \
   --revision "$(git rev-parse HEAD)" \
   --output-dir /tmp/webai-deploy
 ```
 
+Creator-managed:
+
+```bash
+cd /opt/webai-bridge
+python3 deploy/render_deployment.py \
+  --domain ai.example.com \
+  --revision "$(git rev-parse HEAD)" \
+  --creator-studio \
+  --output-dir /tmp/webai-deploy
+```
+
 Replace `ai.example.com` with the real hostname.
 
-The renderer rejects:
-
-- malformed/publicly unusable domain input;
-- non-exact revisions;
-- unsafe path characters that could alter the systemd unit;
-- runtime/state directory overlap in either direction;
-- unsafe Unix service names;
-- world-writable output directory;
-- symlink output targets.
-
-Generated files:
+Generated artifacts:
 
 ```text
 webai-bridge.service
@@ -99,220 +137,215 @@ Caddyfile
 deployment-manifest.json
 ```
 
-The manifest contains no secret values.
+The manifest contains paths and policy state, not secret values.
 
-## 5. Operator environment bindings
+The renderer rejects malformed domains, non-exact revisions, unsafe service/path identifiers, overlapping runtime/state directories, world-writable output directories, and symlink output targets.
 
-The generated unit optionally reads:
+## 5. Creator authentication files
+
+Skip this section for buyer-only deployment.
+
+The creator-managed renderer points to:
+
+```text
+/var/lib/webai-bridge/creator-password.secret
+/var/lib/webai-bridge/creator-session.secret
+```
+
+Create both as long random owner-only files readable by the service account. Do not pass the values on the command line.
+
+One safe pattern is to enter the private service account shell and generate them directly:
+
+```bash
+sudo -u webai sh -c 'umask 077; python3 - <<"PY"
+import secrets
+from pathlib import Path
+root = Path("/var/lib/webai-bridge")
+for name in ("creator-password.secret", "creator-session.secret"):
+    path = root / name
+    if not path.exists():
+        path.write_text(secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+PY'
+```
+
+The Studio login password is read from the first file. Read it only in a private administrative session when needed; do not paste it into Git or logs.
+
+## 6. Commercial secret environment
+
+The generated systemd unit optionally reads:
 
 ```text
 /etc/webai-bridge/webai-bridge.env
 ```
 
-Use it only for operator-controlled runtime bindings that cannot live in Package JSON, such as an active Knowledge vector-store binding.
+For the active paid browser/webhook path, configure at minimum:
 
-The generated unit loads this optional file **before** its locked security/Deployment Identity values. The unit then explicitly sets:
+```text
+WEB_AI_ENTITLEMENT_COOKIE_SECRET=<long random secret>
+WEB_AI_STRIPE_SECRET_KEY=<Stripe server or restricted key>
+WEB_AI_STRIPE_WEBHOOK_SECRET=<Stripe webhook signing secret>
+```
 
-- route surface;
-- runtime/config/state paths;
-- diagnostics off;
-- Creator Studio off;
-- insecure HTTP override off;
-- exact deployed revision.
+Keep the environment file root/service-readable only. Buyer BYOK keys and buyer entitlement tokens do **not** belong there.
 
-Do not place buyer BYOK keys or buyer entitlement tokens in this environment file.
+The optional environment file is loaded before locked deployment values. It cannot override the rendered route surface, state/config paths, Studio mode, diagnostics mode, insecure-HTTP setting, or exact revision.
 
-## 6. Install service/reverse-proxy configs
+For creator-managed deployment with an active paid package, the handoff preflight fails startup if the entitlement-cookie secret, Stripe API key, or webhook secret is missing.
 
-Review the generated files before placing them in the host's system locations.
+## 7. Install systemd and Caddy
 
-The application service binds only to localhost:
+Review the rendered files, then place them in the host's system locations.
+
+The application binds only to:
 
 ```text
 127.0.0.1:8080
 ```
 
-The public hostname terminates HTTPS at the reverse proxy and forwards to that local service.
+Caddy terminates public HTTPS and forwards to localhost. The generated Uvicorn command trusts forwarded proxy headers only from localhost.
 
-The generated systemd unit trusts forwarded proxy headers only from localhost.
+Do not add proxy/application request logging that captures credentials, cookies, authorization headers, checkout secrets, provider keys, or URL query values that may carry one-time authority.
 
-Do not add request logging that captures:
+## 8. Startup preflight
 
-- `X-WebAI-Entitlement`;
-- `X-Provider-API-Key`.
-
-Before starting the service, make sure the real systemd unit contains the exact deployed SHA rather than the example placeholder.
-
-## 7. Startup preflight
-
-The generated unit runs:
+Buyer-only systemd uses:
 
 ```text
-ExecStartPre=.../deployment_preflight.py
+deployment_preflight.py
 ```
 
-A failed preflight prevents the service from starting.
+Creator-managed systemd uses:
 
-Important startup failures include:
+```text
+deployment_preflight_handoff.py
+```
 
-- Deployment Identity unset/mismatched;
-- insecure public debug/Studio settings;
-- unsafe state paths/permissions;
-- package/schema/Instructions inconsistencies;
-- embedded secret-like Package JSON material;
+A failed preflight prevents startup.
+
+Important failure classes include:
+
+- deployment identity unset/mismatched;
+- insecure public diagnostics/HTTP;
+- Creator Studio exposed without safe creator auth;
+- mutable package authority missing or unsafe;
+- state files/parents unsafe or world-readable;
+- package/schema/Instructions/Knowledge inconsistencies;
+- embedded secret-like Package material;
 - missing model pricing evidence;
-- active Knowledge with missing binding;
-- active Package with stale blockers/runtime readiness;
-- active paid Package without reviewed checkout binding;
-- active paid Package with shared/platform subsidy;
-- active paid Package outside the current Hosted/BYOK-only commercial shape.
+- active Package with stale readiness/blockers;
+- paid Package without entitlement enforcement or checkout binding;
+- paid Package with unsupported platform subsidy;
+- active paid handoff missing cookie/Stripe/webhook secrets.
 
-Do not bypass the preflight to make the service start.
+Do not bypass preflight to make the service start.
 
-## 8. Install a Studio export
+## 9. Add products
 
-Use the operator installer rather than manually copying two files:
+### Creator-managed path
 
-```bash
-cd /opt/webai-bridge/runtime
-.venv/bin/python package_install_cli.py \
-  --package /path/to/exported-package.json \
-  --instructions /path/to/exported-instructions.md
+Open:
+
+```text
+https://ai.example.com/creator/login
 ```
 
-The installed Package remains `draft`.
+then `/studio`.
+
+The direct-publish path is:
+
+```text
+Studio input
+→ validate
+→ explicit publish confirmation
+→ private temporary Package JSON + Instructions + Knowledge
+→ authority-safe three-artifact install
+→ Package JSON committed last
+→ Knowledge SHA verification
+→ activation
+→ registry reload
+→ /a/{slug}
+```
+
+Direct publish v1 supports `BUY_ONCE` only. It refuses silent overwrite of an already-active package.
+
+### Buyer-only/operator path
+
+Use the package installer/activation CLI deliberately. For PACKAGE_TEXT Knowledge, use `package_bundle_cli.py` so Package JSON, Instructions and Knowledge remain one verified authority bundle.
 
 ```text
 INSTALL != ACTIVATE
 ```
 
-## 9. Review checkout and activate
+## 10. Stripe webhook
 
-For SELF_SETUP, the Package must already carry creator checkout attestation.
+Configure the live Stripe webhook endpoint to the deployed host's webhook route and use the exact signing secret in the private environment file.
 
-For ASSISTED_SETUP, verify the real Stripe product/link matches:
+Durable webhook fulfillment is required so a paid entitlement does not depend on the buyer returning through the browser redirect successfully.
 
-- product;
-- amount;
-- currency;
-- charge basis (one-time vs monthly).
+Do not treat opening checkout, a redirect, or a client-side success page as payment verification.
 
-Then activate explicitly:
+## 11. Process/revision verification
 
-```bash
-.venv/bin/python entitlement_cli.py activate-config \
-  --config apps/my-ai.json \
-  --checkout-reviewed
-```
+After deployment or code revision changes, restart the service and verify the actual running service against the rendered revision and preflight result.
 
-Omit `--checkout-reviewed` only when the package's checkout binding is already in an accepted verified state.
-
-Activation does not prove buyer payment.
-
-## 10. Restart and observe running identity
-
-The registry is process-local. File changes are not evidence that the running process loaded them.
-
-After the intended package state changes, perform an explicit service restart and verify service status/logs.
+For creator-managed product publishing, registry reload occurs in-process after a successful direct publish; a product file appearing on disk alone is still not sufficient evidence of activation.
 
 ```text
 FILES CHANGED != RUNNING PROCESS CHANGED
 ```
 
-Do not claim successful deployment merely because the service manager says the process is running.
+## 12. Live buyer acceptance
 
-## 11. Verify one buyer payment and issue one entitlement
+Use the public HTTPS hostname. Verify at minimum:
 
-After manually verifying the payment in the creator's payment account:
+1. `/health` works;
+2. buyer security headers are present;
+3. unpaid/missing entitlement is denied;
+4. Stripe payment produces durable entitlement;
+5. browser handoff reaches the exact paid Package;
+6. buyer connects ephemeral BYOK;
+7. one small provider request succeeds;
+8. PACKAGE_TEXT Knowledge is retrieved when the product uses it;
+9. revocation immediately denies the same buyer again.
 
-Buy-once example:
+Existing `live_acceptance.py` can be used for the bounded perimeter/provider checks where applicable. Do not record secret values or provider response text in evidence.
 
-```bash
-.venv/bin/python entitlement_cli.py issue \
-  --config apps/my-ai.json \
-  --payment-verified \
-  --payment-ref NON_SECRET_PAYMENT_REFERENCE \
-  --buyer-ref TEST_BUYER_REFERENCE \
-  --base-url https://ai.example.com
-```
+## 13. Creator-managed second-product proof
 
-For subscription, also provide a bounded positive `--days` value.
+On the fixed-domain deployed revision, create a **new second product from Studio without editing repository code or transferring files over SSH**.
 
-The CLI prints the bearer token once. Do not paste the token into logs/issues/Git.
-
-## 12. Live perimeter acceptance
-
-From a machine that reaches the **public HTTPS hostname**, run:
-
-```bash
-cd runtime
-python live_acceptance.py \
-  --base-url https://ai.example.com \
-  --slug my-ai
-```
-
-The tool prompts for the buyer entitlement without echoing it.
-
-It verifies:
-
-1. HTTPS origin;
-2. `/health`;
-3. paid buyer-page security headers;
-4. missing entitlement gets HTTP 401;
-5. the supplied entitlement opens the exact active paid Hosted/BYOK-only Package;
-6. provider call remains skipped by default.
-
-The result contains no entitlement token.
-
-## 13. One live BYOK provider call
-
-Only after perimeter acceptance passes:
-
-```bash
-python live_acceptance.py \
-  --base-url https://ai.example.com \
-  --slug my-ai \
-  --provider-call
-```
-
-The tool separately prompts for the provider API key without echoing it.
-
-It performs one small chat request and records only non-secret evidence:
-
-- model;
-- payer mode;
-- response character count;
-- SHA-256 of response text.
-
-It does not print the provider response text, buyer entitlement, or provider key.
-
-## 14. iPhone/Safari dogfood
-
-After command-line live acceptance passes, use the buyer handoff URL on the actual iPhone/Safari path.
-
-Observe at minimum:
-
-- fragment token is removed from the visible address after capture;
-- reload/tab behavior is understandable;
-- BYOK entry works;
-- chat request works;
-- invalid/revoked token fails cleanly;
-- no secret appears in visible URLs;
-- mobile layout remains usable.
-
-This is a separate acceptance gate. Desktop/curl success does not establish iPhone correctness.
-
-## Stop/claim boundary
-
-Only after the corresponding evidence exists may these states advance:
+Required evidence:
 
 ```text
-CODE MERGED
-< HOST PREFLIGHT PASS
-< PROCESS RUNNING
+second slug appears as active
+its Instructions/Knowledge are isolated from product 1
+its Knowledge digest validates
+product 1 remains unchanged
+active slug overwrite is refused
+buyer path is reachable
+```
+
+This is the real-infrastructure counterpart to the CI config-only/multi-product proof.
+
+## 14. iPhone/Safari acceptance
+
+Repeat the final buyer flow on the actual iPhone/Safari path after fixed-domain deployment. Confirm checkout handoff, BYOK connection, chat, Knowledge result, reload/restart behavior, revoked access, and absence of secrets in visible URLs.
+
+Desktop/CI success does not establish the mobile boundary.
+
+## Stop / claim boundary
+
+Advance claims only with corresponding evidence:
+
+```text
+CODE / CI PASS
+< FIXED-DOMAIN HOST PREFLIGHT PASS
+< PROCESS + REVISION IDENTITY PASS
 < PUBLIC HTTPS PASS
-< BUYER ENTITLEMENT PASS
-< LIVE PROVIDER PASS
+< CREATOR DIRECT-PUBLISH PASS
+< BUYER PAYMENT / ENTITLEMENT / BYOK PASS
+< SECOND-PRODUCT PASS
 < IPHONE PASS
 ```
 
