@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import time
 import types
+import uuid
 from pathlib import Path
 
 CONTROL = Path("/opt/webai-bridge-control")
@@ -13,10 +16,15 @@ BASE_PATH = "deploy/exact_head_deploy.py"
 HOSTSAFE_PATH = "deploy/exact_head_deploy_hostsafe.py"
 READY_PATH = "deploy/exact_head_deploy_hostsafe_ready.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
+BOOTSTRAP_CLEAN_ENV = "WEB_AI_BOOTSTRAP_CLEAN"
+DEPLOY_CONTROL_STATE = Path("/var/lib/webai-bridge-deploy-control")
 
 TARGET_SHA = "5fd4c791e636464f1a3b5195a3e1048b505d6de5"
 TARGET_TREE = "155dc692264a8f7edcd74b0eaff8cba28b0f11ef"
-ENV_AUTHORITY_ID = "SYSTEMD_FINAL_UNSET_EXEC_REBIND_GIT_SCOPED_V2"
+ENV_AUTHORITY_ID = "SYSTEMD_FINAL_UNSET_EXEC_REBIND_GIT_SCOPED_V3"
+PROCESS_ENV_AUTHORITY = "CLEAN_BOOTSTRAP_ALLOWLIST_V1"
+PREPARE_TRUST_AUTHORITY = "ROOT_OWNED_BEFORE_DEPENDENCY_EXECUTION_V1"
+EVIDENCE_AUTHORITY = "SEPARATE_ROOT_ONLY_DEPLOY_CONTROL_STATE_V1"
 PREFLIGHT_TIMEOUT_SECONDS = 30
 STRIPE_ACCEPTANCE_TIMEOUT_SECONDS = 60
 STRIPE_HTTP_TIMEOUT_SECONDS = 5
@@ -43,6 +51,7 @@ EXECUTION_HAZARD_ENV_KEYS = (
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_KEY_0",
     "GIT_CONFIG_VALUE_0",
+    "GIT_NO_REPLACE_OBJECTS",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
@@ -79,6 +88,17 @@ EXECUTION_HAZARD_ENV_KEYS = (
     "UVICORN_ROOT_PATH",
 )
 
+BOOTSTRAP_ALLOWED_ENV_KEYS = frozenset(
+    {
+        CONTROLLER_REVISION_ENV,
+        BOOTSTRAP_CLEAN_ENV,
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+    }
+)
+
 EXPECTED_RUNTIME_POLICY = {
     "requests_per_minute": 20,
     "byok_session_ttl_seconds": 900,
@@ -87,6 +107,52 @@ EXPECTED_RUNTIME_POLICY = {
     "entitlement_cookie_max_age_seconds": 31536000,
 }
 EXPECTED_SERVER_AUTHORITY = "PROGRAMMATIC_SINGLE_WORKER_V1"
+
+
+def _validate_bootstrap_environment(environ: dict[str, str]) -> str:
+    revision = (environ.get(CONTROLLER_REVISION_ENV) or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError(
+            f"{CONTROLLER_REVISION_ENV} must pin the exact 40-hex controller revision"
+        )
+    if environ.get(BOOTSTRAP_CLEAN_ENV) != "1":
+        raise RuntimeError(
+            f"{BOOTSTRAP_CLEAN_ENV}=1 is required from the clean bootstrap invocation"
+        )
+    unexpected = sorted(set(environ) - BOOTSTRAP_ALLOWED_ENV_KEYS)
+    if unexpected:
+        raise RuntimeError(
+            "controller bootstrap environment is not clean; unexpected keys: "
+            + ", ".join(unexpected)
+        )
+    if environ.get("PATH") not in (None, "/usr/bin:/bin"):
+        raise RuntimeError("controller bootstrap PATH must be exactly /usr/bin:/bin")
+    return revision
+
+
+def _install_clean_process_environment(revision: str) -> None:
+    os.environ.clear()
+    os.environ.update(
+        {
+            CONTROLLER_REVISION_ENV: revision,
+            BOOTSTRAP_CLEAN_ENV: "1",
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/root",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYTHONNOUSERSITE": "1",
+            "PIP_CONFIG_FILE": "/dev/null",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+    )
+
+
+def _subprocess_env() -> dict[str, str]:
+    return dict(os.environ)
 
 
 def _run_git(*args: str) -> str:
@@ -98,6 +164,7 @@ def _run_git(*args: str) -> str:
         check=False,
         capture_output=True,
         text=True,
+        env=_subprocess_env(),
     )
     if completed.returncode:
         detail = (completed.stderr or completed.stdout or str(completed.returncode)).strip()
@@ -106,11 +173,8 @@ def _run_git(*args: str) -> str:
 
 
 def _controller_revision_from_env() -> str:
-    revision = (os.environ.get(CONTROLLER_REVISION_ENV) or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", revision):
-        raise RuntimeError(
-            f"{CONTROLLER_REVISION_ENV} must pin the exact 40-hex controller revision"
-        )
+    revision = _validate_bootstrap_environment(dict(os.environ))
+    _install_clean_process_environment(revision)
     actual = _run_git("rev-parse", "HEAD").lower()
     if actual != revision:
         raise RuntimeError(
@@ -126,6 +190,7 @@ def _load_committed(controller_revision: str, path: str, module_name: str):
         check=False,
         capture_output=True,
         text=True,
+        env=_subprocess_env(),
     )
     if completed.returncode:
         detail = (completed.stderr or completed.stdout or str(completed.returncode)).strip()
@@ -250,6 +315,7 @@ def _scope_preflight_git_trust(base, service: Path) -> str:
             "GIT_CONFIG_SYSTEM=/dev/null",
             "GIT_CONFIG_GLOBAL=/dev/null",
             "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_NO_REPLACE_OBJECTS=1",
             "GIT_CONFIG_COUNT=1",
             "GIT_CONFIG_KEY_0=safe.directory",
             f"GIT_CONFIG_VALUE_0={base.RELEASE}",
@@ -362,6 +428,108 @@ def _stripe_acceptance(base) -> None:
     base.transient(f"webai-stripe-{base.TARGET_SHA[:12]}.service", body)
 
 
+def _secure_existing_root_owned_tree(base, host, path: Path, *, label: str, skip: set[str] | None = None, reject_symlinks: bool = False) -> None:
+    if path.is_symlink():
+        raise base.GateError(f"{label} must not be a symlink: {path}")
+    host._check_root_owned_tree(
+        base,
+        path,
+        label=label,
+        skip=skip,
+        reject_symlinks=reject_symlinks,
+    )
+
+
+def _ensure_secure_root(base, host, path: Path, *, label: str) -> None:
+    if os.geteuid() != 0:
+        raise base.GateError("env-safe prepare requires root")
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_dir():
+            raise base.GateError(f"{label} must be a regular directory: {path}")
+    else:
+        path.mkdir(mode=0o755, parents=False)
+    host._check_root_owned_path(base, path, label=label)
+
+
+def _verify_prepare_roots(base, host, controller_revision: str) -> None:
+    host._require_controller_revision(base, controller_revision)
+    _secure_existing_root_owned_tree(
+        base,
+        host,
+        base.CONTROL,
+        label="controller clone before prepare",
+    )
+    _ensure_secure_root(base, host, base.RELEASE.parent, label="release root before prepare")
+    _ensure_secure_root(base, host, base.VENV.parent, label="venv root before prepare")
+    if base.RELEASE.exists() or base.RELEASE.is_symlink():
+        _secure_existing_root_owned_tree(
+            base,
+            host,
+            base.RELEASE,
+            label="existing exact release before dependency execution",
+            skip={"runtime/.venv"},
+            reject_symlinks=True,
+        )
+    if base.VENV.exists() or base.VENV.is_symlink():
+        _secure_existing_root_owned_tree(
+            base,
+            host,
+            base.VENV,
+            label="existing exact venv before dependency execution",
+        )
+
+
+def _secure_deploy_control_state(base) -> Path:
+    if os.geteuid() != 0:
+        raise base.GateError("deploy evidence requires root")
+    path = DEPLOY_CONTROL_STATE
+    if path.exists() or path.is_symlink():
+        info = path.lstat()
+        if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+            raise base.GateError(f"deploy control state must be a regular directory: {path}")
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o077:
+            raise base.GateError("deploy control state must remain root-owned mode 0700")
+    else:
+        path.mkdir(mode=0o700, parents=False)
+    os.chmod(path, 0o700)
+    return path
+
+
+def _write_prepare_evidence(base, payload: dict) -> Path:
+    root = _secure_deploy_control_state(base)
+    d = root / "deploy-evidence"
+    if d.exists() or d.is_symlink():
+        info = d.lstat()
+        if d.is_symlink() or not stat.S_ISDIR(info.st_mode):
+            raise base.GateError("deploy evidence directory is unsafe")
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o077:
+            raise base.GateError("deploy evidence directory must remain root-owned mode 0700")
+    else:
+        d.mkdir(mode=0o700)
+    os.chmod(d, 0o700)
+
+    unique = (
+        f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-"
+        f"{time.time_ns()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    )
+    p = d / f"{unique}-{base.TARGET_SHA[:12]}.json"
+    t = d / f".{p.name}.tmp"
+    with t.open("x", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(t, 0o600)
+    os.replace(t, p)
+    os.chmod(p, 0o400)
+    dfd = os.open(d, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    return p
+
+
 def _install_envsafe_overlay(base, host, controller_revision: str) -> None:
     original_render = base.render
     original_prepare = base.prepare
@@ -378,6 +546,7 @@ def _install_envsafe_overlay(base, host, controller_revision: str) -> None:
 
     def prepare_envsafe():
         host._require_controller_revision(base, controller_revision)
+        _verify_prepare_roots(base, host, controller_revision)
         prepared = original_prepare()
         host._require_controller_revision(base, controller_revision)
         raw_hash = state.get("target_rendered_service_sha256")
@@ -394,6 +563,9 @@ def _install_envsafe_overlay(base, host, controller_revision: str) -> None:
             "candidate_service_sha256": candidate_hash,
             "service_overlay": ENV_AUTHORITY_ID,
             "environment_authority": "SYSTEMD_FINAL_UNSET_THEN_EXEC_REBIND_V1",
+            "process_environment_authority": PROCESS_ENV_AUTHORITY,
+            "prepare_trust_authority": PREPARE_TRUST_AUTHORITY,
+            "evidence_authority": EVIDENCE_AUTHORITY,
             "server_authority": EXPECTED_SERVER_AUTHORITY,
             "runtime_policy": dict(EXPECTED_RUNTIME_POLICY),
             "git_trust_scope": "ExecStartPre only",
@@ -404,12 +576,21 @@ def _install_envsafe_overlay(base, host, controller_revision: str) -> None:
             "stripe_http_timeout_seconds": STRIPE_HTTP_TIMEOUT_SECONDS,
             "runtime_immutability": "ROOT_OWNED_NON_WRITABLE",
             "controller_revision_pinned": controller_revision,
+            "production_apply_enabled": False,
         }
+
+    def apply_blocked(_approval: str):
+        raise base.GateError(
+            "production apply is intentionally disabled in this canonical prepare controller; "
+            "it requires a separate post-prepare Human Gate and hardened apply capsule"
+        )
 
     base.render = render_envsafe
     base.prepare = prepare_envsafe
     base.candidate_preflight = lambda service: _candidate_preflight(base, service)
     base.stripe_acceptance = lambda: _stripe_acceptance(base)
+    base.evidence = lambda payload: _write_prepare_evidence(base, payload)
+    base.apply = apply_blocked
 
 
 def main() -> int:
