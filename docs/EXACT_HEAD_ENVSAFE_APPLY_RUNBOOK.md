@@ -1,21 +1,34 @@
 # Exact-head env-safe transactional apply runbook
 
-This runbook is the canonical host procedure for moving the frozen WebAI Bridge target from **prepared candidate** to **production** after the transactional apply capsule is merged and separately approved.
+This is the canonical host procedure for moving the frozen WebAI Bridge target from **prepared candidate** to **production** after the apply capsule is merged and separately approved.
 
-It does not authorize a merge, production apply, live payment, iPhone/BYOK/Knowledge acceptance, or PR #30 merge by itself.
+This document does **not** itself authorize a merge, production apply, live payment, iPhone/BYOK/Knowledge acceptance, recovery mutation, or PR #30 merge.
 
-## Frozen product target
+## Frozen rollout identities
 
 ```text
-SHA  = 5fd4c791e636464f1a3b5195a3e1048b505d6de5
-TREE = 155dc692264a8f7edcd74b0eaff8cba28b0f11ef
+TARGET_SHA  = 5fd4c791e636464f1a3b5195a3e1048b505d6de5
+TARGET_TREE = 155dc692264a8f7edcd74b0eaff8cba28b0f11ef
+EXPECTED_PREVIOUS_SHA = 9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1
 ```
 
-The apply approval token is the exact 40-hex target SHA above.
+Production mutation is allowed only from the reviewed previous revision above. If production is already on the target, redundant apply is refused. Any other current production revision is a hard stop before mutation.
 
-## Controller entry
+## Rollback shared-state compatibility
 
-Canonical apply entry:
+The persistent entitlement / checkout / handoff schema modules are required to be exact Git-blob matches in both the reviewed previous revision and target:
+
+```text
+runtime/entitlements.py    dec40737f60cee22170e0996e856de98cb369a93
+runtime/checkout_state.py  e40312626d77f5322108ce97d6d6878385e3f46b
+runtime/handoff_tickets.py 9c71b08605ab1ab02a309cba52fea249313f8114
+```
+
+The apply-ready prepare fetches the reviewed previous SHA and proves those old/target blob identities again. Unknown previous revisions are not treated as rollback-compatible.
+
+This gate covers the persistent stores that production can mutate during normal buyer/webhook traffic while rollout acceptance is running. Creator Studio mutation is not part of the rollout acceptance and should not be performed concurrently with the production switch.
+
+## Canonical controller entry
 
 ```text
 deploy/exact_head_deploy_envsafe_apply_ready.py
@@ -24,16 +37,18 @@ deploy/exact_head_deploy_envsafe_apply_ready.py
 Authority chain:
 
 ```text
-clean root bootstrap
+root/no-symlink controller trust BEFORE first Git
+→ empty inherited environment
 → exact synchronized controller revision
-→ env-safe exact-head prepare / candidate preflight
+→ env-safe exact-head prepare / transient candidate preflight
+→ reviewed previous revision + shared-state compatibility
 → stable previous InvocationID + MainPID + cwd + revision + service hash
-→ Human-Gate generation rebound
+→ pre-mutation generation rebound
 → exclusive root-only apply lock
 → separate root-only rollback backup
 → durable PREPARED_FOR_SWITCH transaction
 → SWITCH_ARMED before any service-file mutation
-→ candidate/controller/source recheck
+→ candidate/controller/source/unit recheck
 → atomic systemd unit replacement
 → restart
 → stable target InvocationID + MainPID
@@ -41,12 +56,10 @@ clean root bootstrap
 → bounded Stripe external acceptance (no payment)
 → same-generation post-Stripe health
 → root-only success evidence
-→ immutable transaction archive
+→ committed transaction archive
 ```
 
 ## Root-only control state
-
-The application account does not own these apply assets:
 
 ```text
 /var/lib/webai-bridge-deploy-control/
@@ -54,15 +67,19 @@ The application account does not own these apply assets:
   deploy-backups/
   production-apply/
     apply.lock
-    active-apply.json        # exists only while unresolved/in progress
+    active-apply.json
   apply-transactions/
 ```
 
-Any existing `active-apply.json` is a hard stop. Do not start another production apply until the transaction is inspected and recovered under a separate recovery decision.
+Any existing `active-apply.json` is a hard stop. Do not delete it to force another deploy.
 
-## 1. Synchronize controller
+## Canonical clean bootstrap
 
-Use the same empty-environment/root-trust bootstrap used by the prepare controller. The controller must be clean, on `main`, and exactly equal to `origin/main` before any committed apply object is executed.
+Every controller invocation—not just the first sync—must begin from an empty environment and prove the controller/Git metadata are root-owned and non-writable before the committed apply object is read.
+
+The Python apply-ready wrapper repeats this trust check itself before its first Git command, so the shell check below is defense in depth rather than inherited proof.
+
+### 1. Synchronize controller — reversible
 
 ```bash
 sudo /usr/bin/env -i \
@@ -79,7 +96,7 @@ sudo /usr/bin/env -i \
     test -d "$C/.git"
     test "$(/usr/bin/stat -c %u "$C")" = 0
     test "$(/usr/bin/stat -c %u "$C/.git")" = 0
-    test -z "$(/usr/bin/find "$C/.git" \( ! -user root -o -perm /022 \) -print -quit)"
+    test -z "$(/usr/bin/find "$C/.git" \( ! -user root -o -perm /022 -o -type l \) -print -quit)"
     test "$(/usr/bin/git -C "$C" config --local --get remote.origin.url)" = "https://github.com/nobutakayamauchi/WebAI-Bridge.git"
     test -z "$(/usr/bin/git -C "$C" status --porcelain --untracked-files=all)"
     test "$(/usr/bin/git -C "$C" rev-parse --abbrev-ref HEAD)" = main
@@ -89,9 +106,9 @@ sudo /usr/bin/env -i \
   '
 ```
 
-## 2. Apply-ready prepare — reversible gate
+### 2. Apply-ready prepare — reversible Human-Gate evidence
 
-Run this before requesting the production Human Gate. It performs a fresh exact-head prepare/preflight and records the stable **current production generation** without replacing or restarting the production service.
+This performs a fresh exact-head prepare/preflight and records the stable current production generation. It does not replace/restart production.
 
 ```bash
 sudo /usr/bin/env -i \
@@ -106,6 +123,9 @@ sudo /usr/bin/env -i \
   /bin/sh -ceu '
     C=/opt/webai-bridge-control
     test -d "$C/.git"
+    test "$(/usr/bin/stat -c %u "$C")" = 0
+    test "$(/usr/bin/stat -c %u "$C/.git")" = 0
+    test -z "$(/usr/bin/find "$C/.git" \( ! -user root -o -perm /022 -o -type l \) -print -quit)"
     test -z "$(/usr/bin/git -C "$C" status --porcelain --untracked-files=all)"
     /usr/bin/git -C "$C" fetch --no-tags origin main
     test "$(/usr/bin/git -C "$C" rev-parse --abbrev-ref HEAD)" = main
@@ -123,7 +143,7 @@ sudo /usr/bin/env -i \
   '
 ```
 
-Expected prepare evidence includes:
+Expected evidence includes:
 
 ```text
 status = PREPARED_CANDIDATE_PASS
@@ -133,18 +153,22 @@ apply_authority = ROOT_ONLY_TRANSACTIONAL_APPLY_V2
 backup_authority = SEPARATE_ROOT_ONLY_SERVICE_BACKUP_V2
 transaction_authority = DURABLE_SWITCH_ARMED_FAIL_CLOSED_V2
 previous_generation_authority = STABLE_INVOCATION_ID_MAINPID_SNAPSHOT_V1
-human_gate_authority = PRE_APPLY_GENERATION_REBOUND_BEFORE_MUTATION_V1
-previous_production_snapshot = {...}
+bootstrap_controller_trust_authority = ROOT_OWNED_GIT_BEFORE_FIRST_GIT_V1
+pre_mutation_generation_authority = PRE_MUTATION_GENERATION_REBOUND_V2
+rollback_state_compatibility_authority = EXACT_SHARED_STATE_SCHEMA_BLOB_EQUIVALENCE_V1
+expected_previous_revision = 9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1
+previous_production_supported = true
 target_already_active = false
+previous_production_snapshot = {...}
 ```
 
-`target_already_active=true` means production is already on the frozen target. Do not run apply again; verify the existing generation instead.
+If `previous_production_supported=false`, stop. If `target_already_active=true`, do not reapply; verify the already-running target instead.
 
-## 3. Production apply — HUMAN GATE
+## 3. Production apply — HUMAN GATE / irreversible service mutation
 
-**STOP HERE until the explicit production Human Gate is approved.**
+**STOP HERE until explicit production apply approval is given.**
 
-Only after approval, use the same clean bootstrap and the exact target SHA token:
+After approval, execute the same root-trusted empty bootstrap with exact target SHA as approval token. The command performs a **fresh prepare/preflight again** and re-observes the previous production generation before the first mutation; it does not inherit the earlier prepare PASS.
 
 ```bash
 sudo /usr/bin/env -i \
@@ -159,6 +183,9 @@ sudo /usr/bin/env -i \
   /bin/sh -ceu '
     C=/opt/webai-bridge-control
     test -d "$C/.git"
+    test "$(/usr/bin/stat -c %u "$C")" = 0
+    test "$(/usr/bin/stat -c %u "$C/.git")" = 0
+    test -z "$(/usr/bin/find "$C/.git" \( ! -user root -o -perm /022 -o -type l \) -print -quit)"
     test -z "$(/usr/bin/git -C "$C" status --porcelain --untracked-files=all)"
     /usr/bin/git -C "$C" fetch --no-tags origin main
     test "$(/usr/bin/git -C "$C" rev-parse --abbrev-ref HEAD)" = main
@@ -177,11 +204,7 @@ sudo /usr/bin/env -i \
   '
 ```
 
-This command performs a **fresh prepare/preflight again** before mutation. It does not inherit a stale prepare success.
-
 ## Success condition
-
-Production apply is successful only when the root-only evidence reports:
 
 ```text
 status = DEPLOYED_AND_EXTERNAL_ACCEPTANCE_PASS
@@ -189,14 +212,13 @@ production_mutation = true
 running_identity.revision = 5fd4c791e636464f1a3b5195a3e1048b505d6de5
 stripe_external_acceptance = PASS
 live_payment_performed = false
-human_gate_generation_revalidated = true
+pre_mutation_generation_revalidated = true
+expected_previous_revision = 9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1
 ```
 
-The readiness overlay additionally requires the same `InvocationID + MainPID` through target identity, HTTPS health, Stripe external acceptance, and post-Stripe health.
+The readiness layer additionally requires one unchanged `InvocationID + MainPID` through target identity, HTTPS health, Stripe external acceptance, and post-Stripe health.
 
 ## Failure / rollback conditions
-
-Expected fail-closed statuses:
 
 ```text
 PRE_SWITCH_FAILURE
@@ -204,13 +226,13 @@ ROLLBACK_VERIFIED_AFTER_FAILURE
 ROLLBACK_FAILED
 ```
 
-`ROLLBACK_VERIFIED_AFTER_FAILURE` means the target failed but the previous exact service file, previous revision/cwd generation, and HTTPS health were restored and verified.
+`ROLLBACK_VERIFIED_AFTER_FAILURE` means the exact previous unit was restored and the previous revision/cwd plus HTTPS health were verified after restart.
 
-`ROLLBACK_FAILED` is a hard stop. The active transaction must remain in root-only control state and **no further apply may run**.
+`ROLLBACK_FAILED` is a hard stop. The active root-only transaction must remain and no further apply may run.
 
-## Crash / forced termination boundary
+## Crash boundary
 
-Before service-file replacement, the journal transitions to:
+Immediately before service-file replacement the durable journal becomes:
 
 ```text
 phase = SWITCH_ARMED
@@ -218,26 +240,16 @@ production_mutation = false
 production_mutation_possible = true
 ```
 
-Therefore a process kill or host failure in the atomic-switch window cannot be misreported as proof that no mutation occurred.
+A kill/host failure in the atomic-switch window therefore cannot later be misreported as proof that no mutation occurred.
 
-If `active-apply.json` exists after an interrupted run, first inspect only:
+If `active-apply.json` exists after interruption, inspect only:
 
 ```bash
 sudo python3 -m json.tool /var/lib/webai-bridge-deploy-control/production-apply/active-apply.json
 ```
 
-Then compare the current service/process reality with the recorded `old_service_sha256`, `candidate_service_sha256`, `previous_service`, and `backup_service`. Recovery itself can replace/restart production and is therefore a **separate mutation Human Gate**; do not improvise recovery by deleting the active transaction marker.
+Recovery can replace/restart production and is therefore a separate mutation Human Gate. Do not improvise recovery by deleting the marker.
 
 ## Non-claims
 
-This apply gate does not certify:
-
-- a live Stripe charge/payment;
-- browser-bound paid completion;
-- iPhone Safari body handoff;
-- BYOK live provider response;
-- PACKAGE_TEXT Knowledge behavior;
-- revoke followed by immediate 401;
-- PR #30 merge readiness.
-
-Those remain later reality gates after exact production apply passes.
+This apply gate does not certify live Stripe payment, browser-bound paid completion, iPhone Safari handoff, BYOK live inference, PACKAGE_TEXT Knowledge behavior, revoke→401, or PR #30 merge readiness. Those remain later reality gates after exact production apply passes.
