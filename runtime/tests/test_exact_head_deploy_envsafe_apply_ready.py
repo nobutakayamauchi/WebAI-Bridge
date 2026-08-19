@@ -19,7 +19,12 @@ class GateError(RuntimeError):
     pass
 
 
-def _generation(*, pid: int = 10, invocation: str = "a" * 32, revision: str = "9" * 40):
+def _generation(
+    *,
+    pid: int = 10,
+    invocation: str = "a" * 32,
+    revision: str = m.EXPECTED_PREVIOUS_SHA,
+):
     return {
         "pid": pid,
         "invocation_id": invocation,
@@ -40,6 +45,23 @@ def _fixture_inner(sequence: list[dict]):
         @staticmethod
         def systemd_composition():
             return None
+
+        @staticmethod
+        def run(*args: str):
+            return ""
+
+        @staticmethod
+        def git(repo: Path, *args: str):
+            ref = args[-1]
+            if ref == f"{m.EXPECTED_PREVIOUS_SHA}^{{commit}}":
+                return m.EXPECTED_PREVIOUS_SHA
+            for path, blob in m.SHARED_STATE_SCHEMA_BLOBS.items():
+                if ref in {
+                    f"{m.EXPECTED_PREVIOUS_SHA}:{path}",
+                    f"{Base.TARGET_SHA}:{path}",
+                }:
+                    return blob
+            raise AssertionError(f"unexpected git ref: {ref}")
 
     class Inner:
         BOOTSTRAP_ALLOWED_ENV_KEYS = m.BOOTSTRAP_ALLOWED_ENV_KEYS
@@ -72,6 +94,15 @@ def _fixture_inner(sequence: list[dict]):
     return Inner, Base
 
 
+def test_reviewed_shared_state_schema_blobs_are_exact():
+    assert m.EXPECTED_PREVIOUS_SHA == "9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1"
+    assert m.SHARED_STATE_SCHEMA_BLOBS == {
+        "runtime/entitlements.py": "dec40737f60cee22170e0996e856de98cb369a93",
+        "runtime/checkout_state.py": "e40312626d77f5322108ce97d6d6878385e3f46b",
+        "runtime/handoff_tickets.py": "9c71b08605ab1ab02a309cba52fea249313f8114",
+    }
+
+
 def test_same_previous_generation_requires_all_identity_fields():
     a = _generation()
     assert m._same_previous_generation(a, dict(a))
@@ -87,7 +118,13 @@ def test_same_previous_generation_requires_all_identity_fields():
         assert not m._same_previous_generation(a, changed)
 
 
-def test_prepare_reports_stable_previous_generation_without_mutation():
+def test_shared_state_compatibility_checks_previous_and_target_git_blobs():
+    _inner, Base = _fixture_inner([_generation()])
+    observed = m._verify_shared_state_compatibility(Base)
+    assert observed == m.SHARED_STATE_SCHEMA_BLOBS
+
+
+def test_prepare_reports_reviewed_previous_generation_without_mutation():
     inner, Base = _fixture_inner([_generation()])
     m._install_human_gate_overlay(inner)
     inner._install_apply_overlay(Base, object(), object(), object(), "c" * 40)
@@ -96,7 +133,11 @@ def test_prepare_reports_stable_previous_generation_without_mutation():
 
     assert prepared["previous_production_snapshot"]["invocation_id"] == "a" * 32
     assert prepared["target_already_active"] is False
-    assert prepared["human_gate_authority"] == m.HUMAN_GATE_AUTHORITY
+    assert prepared["previous_production_supported"] is True
+    assert prepared["expected_previous_revision"] == m.EXPECTED_PREVIOUS_SHA
+    assert prepared["pre_mutation_generation_authority"] == m.PRE_MUTATION_GENERATION_AUTHORITY
+    assert prepared["rollback_state_compatibility_authority"] == m.ROLLBACK_STATE_COMPATIBILITY_AUTHORITY
+    assert prepared["rollback_shared_state_schema_blobs"] == m.SHARED_STATE_SCHEMA_BLOBS
     assert Base.mutation_calls == 0
 
 
@@ -107,7 +148,7 @@ def test_apply_rejects_generation_change_before_inner_mutation():
     m._install_human_gate_overlay(inner)
     inner._install_apply_overlay(Base, object(), object(), object(), "c" * 40)
 
-    with pytest.raises(GateError, match="changed after Human Gate"):
+    with pytest.raises(GateError, match="changed between apply entry and mutation"):
         Base.apply(Base.TARGET_SHA)
 
     assert Base.mutation_calls == 0
@@ -126,7 +167,19 @@ def test_apply_rejects_redundant_target_before_inner_apply():
     assert Base.mutation_calls == 0
 
 
-def test_success_evidence_records_human_gate_revalidation():
+def test_apply_rejects_unknown_previous_revision_before_inner_apply():
+    unknown = _generation(revision="8" * 40)
+    inner, Base = _fixture_inner([unknown])
+    m._install_human_gate_overlay(inner)
+    inner._install_apply_overlay(Base, object(), object(), object(), "c" * 40)
+
+    with pytest.raises(GateError, match="not the reviewed rollback baseline"):
+        Base.apply(Base.TARGET_SHA)
+
+    assert Base.mutation_calls == 0
+
+
+def test_success_evidence_records_pre_mutation_revalidation_and_compatibility():
     before = _generation()
     inner, Base = _fixture_inner([before, dict(before)])
     m._install_human_gate_overlay(inner)
@@ -137,6 +190,9 @@ def test_success_evidence_records_human_gate_revalidation():
     assert result == Path("/tmp/evidence.json")
     assert Base.mutation_calls == 1
     payload = Base.evidence_payloads[-1]
-    assert payload["human_gate_previous_production_snapshot"]["pid"] == 10
-    assert payload["human_gate_generation_revalidated"] is True
-    assert payload["human_gate_authority"] == m.HUMAN_GATE_AUTHORITY
+    assert payload["pre_mutation_previous_production_snapshot"]["pid"] == 10
+    assert payload["pre_mutation_generation_revalidated"] is True
+    assert payload["pre_mutation_generation_authority"] == m.PRE_MUTATION_GENERATION_AUTHORITY
+    assert payload["expected_previous_revision"] == m.EXPECTED_PREVIOUS_SHA
+    assert payload["rollback_state_compatibility_authority"] == m.ROLLBACK_STATE_COMPATIBILITY_AUTHORITY
+    assert payload["rollback_shared_state_schema_blobs"] == m.SHARED_STATE_SCHEMA_BLOBS
