@@ -24,7 +24,7 @@ class GateError(RuntimeError):
 
 
 class FakeEnvSafe:
-    pass
+    BOOTSTRAP_ALLOWED_ENV_KEYS = m.BOOTSTRAP_ALLOWED_ENV_KEYS
 
 
 class FakeHost:
@@ -39,6 +39,35 @@ class FakeHost:
     def _check_root_owned_tree(self, base, path: Path, **kwargs) -> None:
         assert path.is_dir()
         self.render_checks += 1
+
+
+class FakeReady:
+    def __init__(self):
+        self.identity_reads = 0
+        self.stable_reads = 0
+
+    def _read_main_process_identity(self, base) -> dict:
+        self.identity_reads += 1
+        return {
+            "pid": 101,
+            "invocation_id": "d" * 32,
+            "cwd": "/old/runtime",
+            "revision": "9" * 40,
+            "cmd": ["old-server"],
+        }
+
+    def _wait_for_stable_identity(self, base, **kwargs) -> dict:
+        self.stable_reads += 1
+        return {
+            "pid": kwargs.get("required_pid", 101),
+            "invocation_id": kwargs.get("required_invocation_id", "d" * 32),
+            "cwd": kwargs["expected_cwd"],
+            "revision": kwargs["expected_revision"],
+            "cmd": ["old-server"],
+            "stable_samples": 2,
+            "attempts": 2,
+            "readiness_timeout_seconds": 15.0,
+        }
 
 
 def _hash(path: Path) -> str:
@@ -66,11 +95,22 @@ def _install_test_boundaries(monkeypatch, tmp_path: Path, *, archive_failure: bo
     def fake_backup(base, envsafe, expected_hash: str):
         backup = backup_root / "previous.service"
         shutil.copyfile(base.SERVICE, backup)
+        base.test_backup = backup
         return backup, 0o644, expected_hash
 
     monkeypatch.setattr(m, "_service_backup", fake_backup)
 
-    original_archive = m._archive_transaction
+    phases: list[str] = []
+    real_write = m._write_json_atomic
+
+    def recording_write(base, path: Path, payload: dict, *, mode: int = 0o400):
+        phase = payload.get("phase")
+        if isinstance(phase, str):
+            phases.append(phase)
+        return real_write(base, path, payload, mode=mode)
+
+    monkeypatch.setattr(m, "_write_json_atomic", recording_write)
+
     if archive_failure:
         monkeypatch.setattr(
             m,
@@ -78,10 +118,15 @@ def _install_test_boundaries(monkeypatch, tmp_path: Path, *, archive_failure: bo
             lambda *args, **kwargs: (_ for _ in ()).throw(GateError("archive boom")),
         )
 
-    return apply_root, backup_root, tx_root, original_archive
+    return apply_root, backup_root, tx_root, phases
 
 
-def _fake_base(tmp_path: Path, *, fail_stripe: bool = False):
+def _fake_base(
+    tmp_path: Path,
+    *,
+    fail_stripe: bool = False,
+    tamper_backup_on_stripe: bool = False,
+):
     render = tmp_path / "render"
     render.mkdir()
     candidate = render / "webai-bridge.service"
@@ -101,6 +146,7 @@ def _fake_base(tmp_path: Path, *, fail_stripe: bool = False):
         evidence_payloads: list[dict] = []
         calls: list[str] = []
         rollback_calls = 0
+        test_backup: Path | None = None
 
         @staticmethod
         def sha256(path: Path) -> str:
@@ -121,17 +167,6 @@ def _fake_base(tmp_path: Path, *, fail_stripe: bool = False):
         @staticmethod
         def systemd_composition():
             Base.calls.append("systemd_composition")
-
-        @staticmethod
-        def current_service_snapshot():
-            Base.calls.append("snapshot")
-            return {
-                "active": True,
-                "pid": 101,
-                "cwd": "/old/runtime",
-                "revision": "9" * 40,
-                "service_sha256": _hash(service),
-            }
 
         @staticmethod
         def verify_source():
@@ -165,6 +200,9 @@ def _fake_base(tmp_path: Path, *, fail_stripe: bool = False):
         @staticmethod
         def stripe_acceptance():
             Base.calls.append("stripe_acceptance")
+            if tamper_backup_on_stripe:
+                assert Base.test_backup is not None
+                Base.test_backup.write_text("tampered-backup\n", encoding="utf-8")
             if fail_stripe:
                 raise GateError("stripe acceptance failed")
 
@@ -195,20 +233,21 @@ def _fake_base(tmp_path: Path, *, fail_stripe: bool = False):
 
 
 def test_authority_ids_are_explicit_and_root_separated():
-    assert m.APPLY_AUTHORITY == "ROOT_ONLY_TRANSACTIONAL_APPLY_V1"
-    assert m.BACKUP_AUTHORITY == "SEPARATE_ROOT_ONLY_SERVICE_BACKUP_V1"
-    assert m.TRANSACTION_AUTHORITY == "DURABLE_PENDING_TRANSACTION_FAIL_CLOSED_V1"
+    assert m.APPLY_AUTHORITY == "ROOT_ONLY_TRANSACTIONAL_APPLY_V2"
+    assert m.BACKUP_AUTHORITY == "SEPARATE_ROOT_ONLY_SERVICE_BACKUP_V2"
+    assert m.TRANSACTION_AUTHORITY == "DURABLE_SWITCH_ARMED_FAIL_CLOSED_V2"
     assert m.LOCK_AUTHORITY == "ROOT_ONLY_EXCLUSIVE_FLOCK_V1"
+    assert m.PREVIOUS_GENERATION_AUTHORITY == "STABLE_INVOCATION_ID_MAINPID_SNAPSHOT_V1"
 
 
-def test_transaction_payload_contains_no_secret_values(tmp_path):
+def test_transaction_payload_marks_mutation_possibility_explicitly(tmp_path):
     class Base:
         TARGET_SHA = "5" * 40
         TARGET_TREE = "6" * 40
 
     payload = m._transaction_payload(
         transaction_id="tx",
-        phase="PREPARED_FOR_SWITCH",
+        phase="SWITCH_ARMED",
         controller_revision="c" * 40,
         base=Base,
         prepared={"candidate_service_sha256": "a" * 64},
@@ -217,12 +256,15 @@ def test_transaction_payload_contains_no_secret_values(tmp_path):
         old_hash="b" * 64,
         candidate_hash="a" * 64,
         production_mutation=False,
+        production_mutation_possible=True,
     )
     raw = json.dumps(payload)
-    assert "STRIPE_SECRET" not in raw
-    assert "OPENAI_API_KEY" not in raw
+    assert payload["production_mutation"] is False
+    assert payload["production_mutation_possible"] is True
     assert payload["live_payment_performed"] is False
     assert payload["secrets_recorded"] is False
+    assert "STRIPE_SECRET" not in raw
+    assert "OPENAI_API_KEY" not in raw
 
 
 def test_pending_transaction_fails_closed(monkeypatch, tmp_path):
@@ -237,22 +279,37 @@ def test_pending_transaction_fails_closed(monkeypatch, tmp_path):
         m._assert_no_pending_transaction(Base, FakeEnvSafe())
 
 
+def test_stable_previous_snapshot_binds_invocation_pid_and_unit_hash(tmp_path):
+    Base, _candidate, _service = _fake_base(tmp_path)
+    ready = FakeReady()
+    snapshot = m._stable_previous_snapshot(Base, ready)
+    assert snapshot["pid"] == 101
+    assert snapshot["invocation_id"] == "d" * 32
+    assert snapshot["revision"] == "9" * 40
+    assert snapshot["service_sha256"] == _hash(Base.SERVICE)
+    assert snapshot["stable_samples"] == 2
+    assert ready.identity_reads == 1
+    assert ready.stable_reads == 1
+
+
 def test_wrong_approval_fails_before_prepare(monkeypatch, tmp_path):
     Base, _candidate, _service = _fake_base(tmp_path)
     host = FakeHost()
+    ready = FakeReady()
     _install_test_boundaries(monkeypatch, tmp_path)
-    m._install_apply_overlay(Base, FakeEnvSafe(), host, "c" * 40)
+    m._install_apply_overlay(Base, FakeEnvSafe(), host, ready, "c" * 40)
 
     with pytest.raises(GateError, match="approval must exactly equal pinned target SHA"):
         Base.apply("0" * 40)
     assert Base.calls == []
 
 
-def test_success_uses_fresh_prepare_and_commits_root_only_transaction(monkeypatch, tmp_path):
+def test_success_arms_journal_before_service_replace(monkeypatch, tmp_path):
     Base, candidate, service = _fake_base(tmp_path)
     host = FakeHost()
-    apply_root, _backup_root, tx_root, _ = _install_test_boundaries(monkeypatch, tmp_path)
-    m._install_apply_overlay(Base, FakeEnvSafe(), host, "c" * 40)
+    ready = FakeReady()
+    apply_root, _backup_root, tx_root, phases = _install_test_boundaries(monkeypatch, tmp_path)
+    m._install_apply_overlay(Base, FakeEnvSafe(), host, ready, "c" * 40)
 
     evidence = Base.apply(Base.TARGET_SHA)
 
@@ -265,11 +322,14 @@ def test_success_uses_fresh_prepare_and_commits_root_only_transaction(monkeypatc
     assert "stripe_acceptance" in Base.calls
     assert host.revision_checks >= 3
     assert host.render_checks == 1
+    assert ready.stable_reads >= 2
+    assert phases.index("SWITCH_ARMED") < phases.index("SERVICE_REPLACED")
     assert not (apply_root / m.ACTIVE_TRANSACTION_NAME).exists()
     archived = list(tx_root.glob("*.json"))
     assert len(archived) == 1
     archive_data = json.loads(archived[0].read_text(encoding="utf-8"))
     assert archive_data["phase"] == "COMMITTED"
+    assert archive_data["production_mutation_possible"] is True
     assert Base.evidence_payloads[-1]["status"] == "DEPLOYED_AND_EXTERNAL_ACCEPTANCE_PASS"
     assert Base.evidence_payloads[-1]["live_payment_performed"] is False
 
@@ -278,8 +338,9 @@ def test_post_switch_failure_requires_verified_rollback(monkeypatch, tmp_path):
     Base, _candidate, service = _fake_base(tmp_path, fail_stripe=True)
     old_bytes = service.read_bytes()
     host = FakeHost()
-    apply_root, _backup_root, tx_root, _ = _install_test_boundaries(monkeypatch, tmp_path)
-    m._install_apply_overlay(Base, FakeEnvSafe(), host, "c" * 40)
+    ready = FakeReady()
+    apply_root, _backup_root, tx_root, _phases = _install_test_boundaries(monkeypatch, tmp_path)
+    m._install_apply_overlay(Base, FakeEnvSafe(), host, ready, "c" * 40)
 
     with pytest.raises(GateError, match="deploy failed"):
         Base.apply(Base.TARGET_SHA)
@@ -294,15 +355,38 @@ def test_post_switch_failure_requires_verified_rollback(monkeypatch, tmp_path):
     assert json.loads(archived[0].read_text(encoding="utf-8"))["phase"] == "ROLLBACK_VERIFIED_AFTER_FAILURE"
 
 
+def test_tampered_backup_is_rejected_before_rollback_mutation(monkeypatch, tmp_path):
+    Base, candidate, service = _fake_base(
+        tmp_path,
+        fail_stripe=True,
+        tamper_backup_on_stripe=True,
+    )
+    host = FakeHost()
+    ready = FakeReady()
+    apply_root, _backup_root, _tx_root, _phases = _install_test_boundaries(monkeypatch, tmp_path)
+    m._install_apply_overlay(Base, FakeEnvSafe(), host, ready, "c" * 40)
+
+    with pytest.raises(GateError, match="rollback/evidence verification failed"):
+        Base.apply(Base.TARGET_SHA)
+
+    assert Base.rollback_calls == 0
+    assert service.read_bytes() == candidate.read_bytes()
+    assert Base.evidence_payloads[-1]["status"] == "ROLLBACK_FAILED"
+    active = apply_root / m.ACTIVE_TRANSACTION_NAME
+    assert active.is_file()
+    assert json.loads(active.read_text(encoding="utf-8"))["phase"] == "ROLLBACK_FAILED"
+
+
 def test_archive_failure_after_durable_success_does_not_rollback(monkeypatch, tmp_path):
     Base, candidate, service = _fake_base(tmp_path)
     host = FakeHost()
-    apply_root, _backup_root, _tx_root, _ = _install_test_boundaries(
+    ready = FakeReady()
+    apply_root, _backup_root, _tx_root, _phases = _install_test_boundaries(
         monkeypatch,
         tmp_path,
         archive_failure=True,
     )
-    m._install_apply_overlay(Base, FakeEnvSafe(), host, "c" * 40)
+    m._install_apply_overlay(Base, FakeEnvSafe(), host, ready, "c" * 40)
 
     with pytest.raises(GateError, match="production is accepted and evidence is durable"):
         Base.apply(Base.TARGET_SHA)
