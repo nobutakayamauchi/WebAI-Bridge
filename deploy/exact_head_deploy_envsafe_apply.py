@@ -19,10 +19,11 @@ ENVSAFE_PATH = "deploy/exact_head_deploy_envsafe.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
 BOOTSTRAP_CLEAN_ENV = "WEB_AI_BOOTSTRAP_CLEAN"
 
-APPLY_AUTHORITY = "ROOT_ONLY_TRANSACTIONAL_APPLY_V1"
-BACKUP_AUTHORITY = "SEPARATE_ROOT_ONLY_SERVICE_BACKUP_V1"
-TRANSACTION_AUTHORITY = "DURABLE_PENDING_TRANSACTION_FAIL_CLOSED_V1"
+APPLY_AUTHORITY = "ROOT_ONLY_TRANSACTIONAL_APPLY_V2"
+BACKUP_AUTHORITY = "SEPARATE_ROOT_ONLY_SERVICE_BACKUP_V2"
+TRANSACTION_AUTHORITY = "DURABLE_SWITCH_ARMED_FAIL_CLOSED_V2"
 LOCK_AUTHORITY = "ROOT_ONLY_EXCLUSIVE_FLOCK_V1"
+PREVIOUS_GENERATION_AUTHORITY = "STABLE_INVOCATION_ID_MAINPID_SNAPSHOT_V1"
 APPLY_CONTROL_DIR_NAME = "production-apply"
 BACKUP_DIR_NAME = "deploy-backups"
 TRANSACTION_DIR_NAME = "apply-transactions"
@@ -220,6 +221,44 @@ def _exclusive_apply_lock(base, envsafe):
             os.close(fd)
 
 
+def _stable_previous_snapshot(base, ready) -> dict:
+    if base.SERVICE.is_symlink() or not base.SERVICE.is_file():
+        raise base.GateError("production service file is unsafe")
+    before_hash = base.sha256(base.SERVICE)
+    first = ready._read_main_process_identity(base)
+    observed = ready._wait_for_stable_identity(
+        base,
+        expected_cwd=first["cwd"],
+        expected_revision=first["revision"],
+        required_pid=first["pid"],
+        required_invocation_id=first["invocation_id"],
+    )
+    after_hash = base.sha256(base.SERVICE)
+    if before_hash != after_hash:
+        raise base.GateError("production service unit changed during stable previous-generation snapshot")
+    return {
+        "active": True,
+        "pid": observed["pid"],
+        "invocation_id": observed["invocation_id"],
+        "cwd": observed["cwd"],
+        "revision": observed["revision"],
+        "service_sha256": after_hash,
+        "stable_samples": observed["stable_samples"],
+        "identity_attempts": observed["attempts"],
+        "previous_generation_authority": PREVIOUS_GENERATION_AUTHORITY,
+    }
+
+
+def _verify_previous_generation(base, ready, previous: dict) -> dict:
+    return ready._wait_for_stable_identity(
+        base,
+        expected_cwd=str(previous["cwd"]),
+        expected_revision=str(previous["revision"]),
+        required_pid=int(previous["pid"]),
+        required_invocation_id=str(previous["invocation_id"]),
+    )
+
+
 def _service_backup(base, envsafe, expected_hash: str) -> tuple[Path, int, str]:
     if not re.fullmatch(r"[0-9a-f]{64}", expected_hash or ""):
         raise base.GateError("previous service snapshot has no exact SHA-256")
@@ -293,9 +332,9 @@ def _transaction_payload(
     old_hash: str,
     candidate_hash: str,
     production_mutation: bool,
-    error: str | None = None,
+    production_mutation_possible: bool,
 ) -> dict:
-    payload = {
+    return {
         "transaction_id": transaction_id,
         "phase": phase,
         "controller_revision": controller_revision,
@@ -307,16 +346,15 @@ def _transaction_payload(
         "old_service_sha256": old_hash,
         "backup_service": str(backup),
         "production_mutation": production_mutation,
+        "production_mutation_possible": production_mutation_possible,
         "apply_authority": APPLY_AUTHORITY,
         "backup_authority": BACKUP_AUTHORITY,
         "transaction_authority": TRANSACTION_AUTHORITY,
         "lock_authority": LOCK_AUTHORITY,
+        "previous_generation_authority": PREVIOUS_GENERATION_AUTHORITY,
         "live_payment_performed": False,
         "secrets_recorded": False,
     }
-    if error:
-        payload["error"] = error
-    return payload
 
 
 def _archive_transaction(base, envsafe, active: Path, payload: dict) -> Path:
@@ -330,8 +368,9 @@ def _archive_transaction(base, envsafe, active: Path, payload: dict) -> Path:
     return final
 
 
-def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> None:
+def _install_apply_overlay(base, envsafe, host, ready, controller_revision: str) -> None:
     original_prepare = base.prepare
+    original_restore = base.restore_previous_service
 
     def prepare_apply():
         _assert_no_pending_transaction(base, envsafe)
@@ -344,7 +383,20 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
             "backup_authority": BACKUP_AUTHORITY,
             "transaction_authority": TRANSACTION_AUTHORITY,
             "lock_authority": LOCK_AUTHORITY,
+            "previous_generation_authority": PREVIOUS_GENERATION_AUTHORITY,
         }
+
+    def restore_checked(backup: Path, *, expected_hash: str, expected_mode: int, previous: dict) -> dict:
+        if backup.is_symlink() or not backup.is_file():
+            raise base.GateError("rollback backup is not a regular file")
+        if base.sha256(backup) != expected_hash:
+            raise base.GateError("rollback backup hash mismatch before restore; refusing mutation")
+        return original_restore(
+            backup,
+            expected_hash=expected_hash,
+            expected_mode=expected_mode,
+            previous=previous,
+        )
 
     def apply_transactional(approval: str) -> Path:
         if approval.lower() != base.TARGET_SHA:
@@ -372,9 +424,7 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
             if candidate_hash != expected_candidate:
                 raise base.GateError("rendered candidate changed after fresh prepare")
 
-            if base.SERVICE.is_symlink() or not base.SERVICE.is_file():
-                raise base.GateError("production service file is unsafe")
-            previous = base.current_service_snapshot()
+            previous = _stable_previous_snapshot(base, ready)
             old_hash = str(previous.get("service_sha256") or "")
             backup, old_mode, backup_hash = _service_backup(base, envsafe, old_hash)
             if backup_hash != old_hash:
@@ -396,6 +446,7 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
                 old_hash=old_hash,
                 candidate_hash=candidate_hash,
                 production_mutation=False,
+                production_mutation_possible=False,
             )
             _write_json_atomic(base, active, transaction, mode=0o400)
 
@@ -408,6 +459,14 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
                     raise base.GateError("rendered candidate changed immediately before switch")
                 if base.sha256(base.SERVICE) != old_hash:
                     raise base.GateError("production service changed immediately before switch")
+                _verify_previous_generation(base, ready, previous)
+
+                transaction = {
+                    **transaction,
+                    "phase": "SWITCH_ARMED",
+                    "production_mutation_possible": True,
+                }
+                _write_json_atomic(base, active, transaction, mode=0o400)
 
                 base.atomic_install(rendered, base.SERVICE, 0o644)
                 switched = True
@@ -452,6 +511,7 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
                     "backup_authority": BACKUP_AUTHORITY,
                     "transaction_authority": TRANSACTION_AUTHORITY,
                     "lock_authority": LOCK_AUTHORITY,
+                    "previous_generation_authority": PREVIOUS_GENERATION_AUTHORITY,
                     "live_payment_performed": False,
                     "secrets_recorded": False,
                 }
@@ -463,7 +523,7 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
                     try:
                         rollback = {
                             "attempted": True,
-                            **base.restore_previous_service(
+                            **restore_checked(
                                 backup,
                                 expected_hash=old_hash,
                                 expected_mode=old_mode,
@@ -499,6 +559,7 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
                     "backup_authority": BACKUP_AUTHORITY,
                     "transaction_authority": TRANSACTION_AUTHORITY,
                     "lock_authority": LOCK_AUTHORITY,
+                    "previous_generation_authority": PREVIOUS_GENERATION_AUTHORITY,
                     "live_payment_performed": False,
                     "secrets_recorded": False,
                 }
@@ -568,6 +629,7 @@ def _install_apply_overlay(base, envsafe, host, controller_revision: str) -> Non
 
     base.prepare = prepare_apply
     base.apply = apply_transactional
+    base.restore_previous_service = restore_checked
 
 
 def main() -> int:
@@ -577,6 +639,8 @@ def main() -> int:
         ENVSAFE_PATH,
         "exact_head_deploy_apply_envsafe",
     )
+    if BOOTSTRAP_ALLOWED_ENV_KEYS != envsafe.BOOTSTRAP_ALLOWED_ENV_KEYS:
+        raise RuntimeError("apply bootstrap allowlist drifted from canonical env-safe controller")
     base = _load_committed(
         controller_revision,
         envsafe.BASE_PATH,
@@ -596,7 +660,7 @@ def main() -> int:
     envsafe._pin_target(base)
     envsafe._install_envsafe_overlay(base, host, controller_revision)
     ready._install_readiness_overlay(base)
-    _install_apply_overlay(base, envsafe, host, controller_revision)
+    _install_apply_overlay(base, envsafe, host, ready, controller_revision)
     return base.main()
 
 
