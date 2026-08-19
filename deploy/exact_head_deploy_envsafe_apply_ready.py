@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import sys
 import types
@@ -12,6 +13,7 @@ INNER_PATH = "deploy/exact_head_deploy_envsafe_apply.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
 BOOTSTRAP_CLEAN_ENV = "WEB_AI_BOOTSTRAP_CLEAN"
 PRE_MUTATION_GENERATION_AUTHORITY = "PRE_MUTATION_GENERATION_REBOUND_V2"
+BOOTSTRAP_CONTROLLER_TRUST_AUTHORITY = "ROOT_OWNED_GIT_BEFORE_FIRST_GIT_V1"
 EXPECTED_PREVIOUS_SHA = "9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1"
 ROLLBACK_STATE_COMPATIBILITY_AUTHORITY = "EXACT_SHARED_STATE_SCHEMA_BLOB_EQUIVALENCE_V1"
 SHARED_STATE_SCHEMA_BLOBS = {
@@ -32,7 +34,42 @@ BOOTSTRAP_ALLOWED_ENV_KEYS = frozenset(
 )
 
 
+def _assert_root_owned_nonwritable(path: Path, *, label: str, directory: bool | None = None) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"{label} must not be a symlink: {path}")
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{label} is missing: {path}") from exc
+    if directory is True and not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"{label} must be a directory: {path}")
+    if directory is False and not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"{label} must be a regular file: {path}")
+    if info.st_uid != 0:
+        raise RuntimeError(f"{label} must be root-owned: {path}")
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise RuntimeError(f"{label} must not be group/world writable: {path}")
+
+
+def _validate_controller_root_trust() -> None:
+    if os.geteuid() != 0:
+        raise RuntimeError("apply-ready bootstrap requires root")
+    _assert_root_owned_nonwritable(CONTROL, label="controller root", directory=True)
+    git_dir = CONTROL / ".git"
+    _assert_root_owned_nonwritable(git_dir, label="controller Git directory", directory=True)
+    for root, dirs, files in os.walk(git_dir, topdown=True, followlinks=False):
+        root_path = Path(root)
+        _assert_root_owned_nonwritable(root_path, label="controller Git directory", directory=True)
+        for name in list(dirs):
+            child = root_path / name
+            _assert_root_owned_nonwritable(child, label="controller Git directory", directory=True)
+        for name in files:
+            child = root_path / name
+            _assert_root_owned_nonwritable(child, label="controller Git file", directory=False)
+
+
 def _validated_bootstrap() -> tuple[str, dict[str, str]]:
+    _validate_controller_root_trust()
     env = dict(os.environ)
     revision = (env.get(CONTROLLER_REVISION_ENV) or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
@@ -153,6 +190,7 @@ def _install_human_gate_overlay(inner) -> None:
                 "previous_production_supported": previous_revision == EXPECTED_PREVIOUS_SHA,
                 "expected_previous_revision": EXPECTED_PREVIOUS_SHA,
                 "pre_mutation_generation_authority": PRE_MUTATION_GENERATION_AUTHORITY,
+                "bootstrap_controller_trust_authority": BOOTSTRAP_CONTROLLER_TRUST_AUTHORITY,
                 "rollback_state_compatibility_authority": ROLLBACK_STATE_COMPATIBILITY_AUTHORITY,
                 "rollback_shared_state_schema_blobs": shared_state_blobs,
             }
@@ -201,6 +239,7 @@ def _install_human_gate_overlay(inner) -> None:
                         state.get("generation_revalidated")
                     ),
                     "pre_mutation_generation_authority": PRE_MUTATION_GENERATION_AUTHORITY,
+                    "bootstrap_controller_trust_authority": BOOTSTRAP_CONTROLLER_TRUST_AUTHORITY,
                     "expected_previous_revision": EXPECTED_PREVIOUS_SHA,
                     "rollback_state_compatibility_authority": ROLLBACK_STATE_COMPATIBILITY_AUTHORITY,
                     "rollback_shared_state_schema_blobs": dict(SHARED_STATE_SCHEMA_BLOBS),
