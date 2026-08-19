@@ -11,7 +11,14 @@ CONTROL = Path("/opt/webai-bridge-control")
 INNER_PATH = "deploy/exact_head_deploy_envsafe_apply.py"
 CONTROLLER_REVISION_ENV = "WEB_AI_CONTROLLER_REVISION"
 BOOTSTRAP_CLEAN_ENV = "WEB_AI_BOOTSTRAP_CLEAN"
-HUMAN_GATE_AUTHORITY = "PRE_APPLY_GENERATION_REBOUND_BEFORE_MUTATION_V1"
+PRE_MUTATION_GENERATION_AUTHORITY = "PRE_MUTATION_GENERATION_REBOUND_V2"
+EXPECTED_PREVIOUS_SHA = "9a1c5a4cd01a16aa7bfa02eede89800aa6d494b1"
+ROLLBACK_STATE_COMPATIBILITY_AUTHORITY = "EXACT_SHARED_STATE_SCHEMA_BLOB_EQUIVALENCE_V1"
+SHARED_STATE_SCHEMA_BLOBS = {
+    "runtime/entitlements.py": "dec40737f60cee22170e0996e856de98cb369a93",
+    "runtime/checkout_state.py": "e40312626d77f5322108ce97d6d6878385e3f46b",
+    "runtime/handoff_tickets.py": "9c71b08605ab1ab02a309cba52fea249313f8114",
+}
 
 BOOTSTRAP_ALLOWED_ENV_KEYS = frozenset(
     {
@@ -96,6 +103,32 @@ def _same_previous_generation(left: dict, right: dict) -> bool:
     return all(left.get(field) == right.get(field) for field in fields)
 
 
+def _verify_shared_state_compatibility(base) -> dict[str, str]:
+    base.run(
+        "/usr/bin/git",
+        "-C",
+        str(CONTROL),
+        "fetch",
+        "--no-tags",
+        "origin",
+        EXPECTED_PREVIOUS_SHA,
+    )
+    if base.git(CONTROL, "rev-parse", f"{EXPECTED_PREVIOUS_SHA}^{{commit}}").lower() != EXPECTED_PREVIOUS_SHA:
+        raise base.GateError("supported previous production commit identity mismatch")
+
+    observed: dict[str, str] = {}
+    for path, expected_blob in SHARED_STATE_SCHEMA_BLOBS.items():
+        previous_blob = base.git(CONTROL, "rev-parse", f"{EXPECTED_PREVIOUS_SHA}:{path}").lower()
+        target_blob = base.git(CONTROL, "rev-parse", f"{base.TARGET_SHA}:{path}").lower()
+        if previous_blob != expected_blob or target_blob != expected_blob:
+            raise base.GateError(
+                f"shared-state rollback compatibility drifted for {path}: "
+                f"previous={previous_blob}, target={target_blob}, expected={expected_blob}"
+            )
+        observed[path] = expected_blob
+    return observed
+
+
 def _install_human_gate_overlay(inner) -> None:
     original_install = inner._install_apply_overlay
 
@@ -111,22 +144,26 @@ def _install_human_gate_overlay(inner) -> None:
             prepared = original_prepare()
             base.systemd_composition()
             previous = original_stable_previous(base, ready)
+            shared_state_blobs = _verify_shared_state_compatibility(base)
+            previous_revision = str(previous.get("revision") or "").lower()
             return {
                 **prepared,
                 "previous_production_snapshot": previous,
-                "target_already_active": (
-                    str(previous.get("revision") or "").lower() == base.TARGET_SHA.lower()
-                ),
-                "human_gate_authority": HUMAN_GATE_AUTHORITY,
+                "target_already_active": previous_revision == base.TARGET_SHA.lower(),
+                "previous_production_supported": previous_revision == EXPECTED_PREVIOUS_SHA,
+                "expected_previous_revision": EXPECTED_PREVIOUS_SHA,
+                "pre_mutation_generation_authority": PRE_MUTATION_GENERATION_AUTHORITY,
+                "rollback_state_compatibility_authority": ROLLBACK_STATE_COMPATIBILITY_AUTHORITY,
+                "rollback_shared_state_schema_blobs": shared_state_blobs,
             }
 
         def stable_previous_rebound(base_arg, ready_arg):
             observed = original_stable_previous(base_arg, ready_arg)
-            pinned = state.get("human_gate_previous")
+            pinned = state.get("pre_mutation_previous")
             if isinstance(pinned, dict):
                 if not _same_previous_generation(pinned, observed):
                     raise base.GateError(
-                        "previous production generation changed after Human Gate and before mutation"
+                        "previous production generation changed between apply entry and mutation"
                     )
                 state["generation_revalidated"] = True
             return observed
@@ -135,11 +172,18 @@ def _install_human_gate_overlay(inner) -> None:
             if approval.lower() != base.TARGET_SHA:
                 raise base.GateError("approval must exactly equal pinned target SHA")
             previous = original_stable_previous(base, ready)
-            if str(previous.get("revision") or "").lower() == base.TARGET_SHA.lower():
+            previous_revision = str(previous.get("revision") or "").lower()
+            if previous_revision == base.TARGET_SHA.lower():
                 raise base.GateError(
                     "target revision is already active; refusing redundant production mutation"
                 )
-            state["human_gate_previous"] = previous
+            if previous_revision != EXPECTED_PREVIOUS_SHA:
+                raise base.GateError(
+                    "current production revision is not the reviewed rollback baseline; "
+                    f"expected {EXPECTED_PREVIOUS_SHA}, got {previous_revision or '<missing>'}"
+                )
+            _verify_shared_state_compatibility(base)
+            state["pre_mutation_previous"] = previous
             state["generation_revalidated"] = False
             inner._stable_previous_snapshot = stable_previous_rebound
             try:
@@ -148,15 +192,18 @@ def _install_human_gate_overlay(inner) -> None:
                 inner._stable_previous_snapshot = original_stable_previous
 
         def evidence_with_human_gate(payload: dict) -> Path:
-            previous = state.get("human_gate_previous")
+            previous = state.get("pre_mutation_previous")
             if isinstance(previous, dict):
                 payload = {
                     **payload,
-                    "human_gate_previous_production_snapshot": previous,
-                    "human_gate_generation_revalidated": bool(
+                    "pre_mutation_previous_production_snapshot": previous,
+                    "pre_mutation_generation_revalidated": bool(
                         state.get("generation_revalidated")
                     ),
-                    "human_gate_authority": HUMAN_GATE_AUTHORITY,
+                    "pre_mutation_generation_authority": PRE_MUTATION_GENERATION_AUTHORITY,
+                    "expected_previous_revision": EXPECTED_PREVIOUS_SHA,
+                    "rollback_state_compatibility_authority": ROLLBACK_STATE_COMPATIBILITY_AUTHORITY,
+                    "rollback_shared_state_schema_blobs": dict(SHARED_STATE_SCHEMA_BLOBS),
                 }
             return original_evidence(payload)
 
