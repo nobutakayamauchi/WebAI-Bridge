@@ -47,6 +47,22 @@ def test_real_shape_page_normalizes_all_records_without_fulfillment():
     assert batch.next_keyword is None
     assert [d["order_ref"] for d in batch.deposits] == ["160300", "160301"]
     assert [d["amount_minor"] for d in batch.deposits] == [100000, 200000]
+    assert batch.unmatchable == ()
+
+
+def test_edi_info_is_used_when_payment_applicant_number_is_absent():
+    page = response(paymentArrivals=[arrival(), arrival(transactionId="2", paymentApplicantNo=None, ediInfo="ＥＤＩ０１", amount=68000)])
+    batch = normalize_mufg_payment_arrivals_response(response=page, account_id=ACCOUNT_ID)
+    assert [d["order_ref"] for d in batch.deposits] == ["160300", "ＥＤＩ０１"]
+    assert batch.unmatchable == ()
+
+
+def test_record_without_supported_order_reference_is_quarantined():
+    page = response(paymentArrivals=[arrival(), arrival(transactionId="2", paymentApplicantNo=None, amount=68000)])
+    batch = normalize_mufg_payment_arrivals_response(response=page, account_id=ACCOUNT_ID)
+    assert len(batch.deposits) == 1
+    assert len(batch.unmatchable) == 1
+    assert batch.unmatchable[0]["transactionId"] == "2"
 
 
 def test_declared_count_mismatch_fails_closed():
@@ -68,7 +84,7 @@ def test_pagination_keyword_is_preserved():
     assert batch.next_keyword == "00000000120261020000111"
 
 
-def test_one_bad_record_rejects_entire_page():
+def test_one_structurally_bad_record_rejects_entire_page():
     bad = response(paymentArrivals=[arrival(), arrival(transactionId="2", debitCreditTypeCode="2")])
     with pytest.raises(PaymentVerificationError, match="not an incoming"):
         normalize_mufg_payment_arrivals_response(response=bad, account_id=ACCOUNT_ID)
