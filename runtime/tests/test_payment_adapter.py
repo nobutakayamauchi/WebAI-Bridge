@@ -9,7 +9,14 @@ RUNTIME_DIR = Path(__file__).resolve().parents[1]
 if str(RUNTIME_DIR) not in sys.path:
     sys.path.insert(0, str(RUNTIME_DIR))
 
-from payment_adapter import PaymentVerificationError, canonicalize_stripe_payment, verify_bank_transfer
+from payment_adapter import (
+    CLAIMED,
+    REPLAY_SAME,
+    BankTransactionClaimStore,
+    PaymentVerificationError,
+    canonicalize_stripe_payment,
+    verify_bank_transfer,
+)
 
 
 def test_stripe_verified_result_becomes_provider_neutral_event():
@@ -89,3 +96,31 @@ def test_bank_transfer_fails_closed_when_evidence_is_not_exact(deposit, order):
 def test_bank_transfer_requires_provider_transaction_identity():
     with pytest.raises(PaymentVerificationError):
         verify_bank_transfer(deposit=_deposit(transaction_ref=""), order=_order())
+
+
+def test_exact_bank_provider_replay_is_idempotent(tmp_path):
+    store = BankTransactionClaimStore(tmp_path / "claims.sqlite3")
+    event = verify_bank_transfer(deposit=_deposit(), order=_order())
+    assert store.claim(event) == CLAIMED
+    assert store.claim(event) == REPLAY_SAME
+
+
+def test_same_bank_transaction_cannot_be_reused_for_different_product(tmp_path):
+    store = BankTransactionClaimStore(tmp_path / "claims.sqlite3")
+    first = verify_bank_transfer(deposit=_deposit(), order=_order())
+    assert store.claim(first) == CLAIMED
+
+    second_order = _order(order_ref="order-002", package_id="product-b", buyer_ref="buyer-2")
+    second_deposit = _deposit(order_ref="order-002")
+    second = verify_bank_transfer(deposit=second_deposit, order=second_order)
+    assert second.event_ref == first.event_ref == "txn-001"
+    with pytest.raises(PaymentVerificationError, match="already claimed"):
+        store.claim(second)
+
+
+def test_same_transaction_ref_is_scoped_by_bank_provider(tmp_path):
+    store = BankTransactionClaimStore(tmp_path / "claims.sqlite3")
+    mufg = verify_bank_transfer(deposit=_deposit(provider="MUFG"), order=_order())
+    gmo = verify_bank_transfer(deposit=_deposit(provider="GMO_AOZORA"), order=_order())
+    assert store.claim(mufg) == CLAIMED
+    assert store.claim(gmo) == CLAIMED
