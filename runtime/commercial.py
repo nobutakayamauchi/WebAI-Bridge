@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import os
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -111,8 +111,22 @@ def secure_handoff_html(body: str, *, status_code: int = 200) -> HTMLResponse:
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    # The only inline script on the checkout completion page calls
+    # history.replaceState to scrub the Stripe session_id from the visible URL.
+    # No external scripts, network calls, or user-authored HTML are permitted.
+    response.headers["Content-Security-Policy"] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     return response
+
+
+def _handoff_page(*, slug: str, ticket: str | None = None, scrub_completion_url: bool = False) -> str:
+    activate_url = f"/checkout/activate/{slug}"
+    clean_handoff_url = f"/checkout/handoff/{slug}"
+    scrub = f"<script>history.replaceState(null,'','{clean_handoff_url}');</script>" if scrub_completion_url else ""
+    common_style = "body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}main{max-width:720px;margin:auto;padding:40px 28px}h1{font-size:32px}p{font-size:18px;line-height:1.65;color:#555}.card{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}form{margin:0}button{display:block;width:100%;border:0;background:#111;color:#fff;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}input{box-sizing:border-box;width:100%;font-size:18px;padding:15px;border:1px solid #bbb;border-radius:12px}small{display:block;margin-top:20px;color:#777;line-height:1.5}details{margin-top:24px}code{display:block;overflow-wrap:anywhere;background:#f5f5f5;padding:12px;border-radius:10px;margin:12px 0}a{color:#111}"
+    if ticket:
+        escaped_ticket = html.escape(ticket, quote=True)
+        return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title><style>{common_style}</style></head><body>{scrub}<main><h1>購入確認が完了しました</h1><div class="card"><p>同じブラウザで使う場合は、そのまま下のボタンを押してください。</p><form method="post" action="{html.escape(activate_url, quote=True)}"><input type="hidden" name="ticket" value="{escaped_ticket}"><button type="submit">この端末でAIを使う</button></form><details><summary>別のSafariへ受け渡す</summary><p>下の1回限りの転送コードをコピーし、Safariで <a href="{html.escape(clean_handoff_url, quote=True)}">購入者アクセス受け渡し画面</a> を開いて貼り付けてください。転送コードをスクリーンショットやログへ残さないでください。</p><code>{html.escape(ticket)}</code></details><small>転送コードは約10分・1回だけ有効です。URLには転送コードを含めません。</small></div></main></body></html>"""
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入者アクセス受け渡し</title><style>{common_style}</style></head><body><main><h1>購入者アクセス受け渡し</h1><div class="card"><p>購入完了画面で表示された1回限りの転送コードを入力してください。</p><form method="post" action="{html.escape(activate_url, quote=True)}"><input name="ticket" required autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="転送コード"><button type="submit">この端末でAIを使う</button></form><small>転送コードはURLへ入れないでください。期限切れ・使用済みのコードは拒否されます。</small></div></main></body></html>"""
 
 
 def ensure_commercial_hosted_runnable(app_config: dict) -> None:
@@ -181,7 +195,7 @@ def ensure_payment_entitlement(*, verified: dict) -> str:
 
 
 core.ensure_hosted_runnable = ensure_commercial_hosted_runnable
-app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.7.1-stripe-webhook-fulfillment")
+app = FastAPI(title="WebAI Bridge Commercial Gateway", version="0.8.0-body-handoff")
 
 
 @app.get("/health")
@@ -207,6 +221,7 @@ def creator_studio_options() -> dict:
     options["buyer_entitlement_transport"] = "SIGNED_HTTPONLY_COOKIE_WITH_LEGACY_BEARER_FALLBACK"
     options["stripe_auto_handoff"] = "BUY_ONCE_WEBHOOK_PLUS_REDIRECT_SINGLE_BROWSER_CLAIM_V1"
     options["stripe_webhook_fulfillment"] = "CHECKOUT_SESSION_COMPLETED_OR_ASYNC_SUCCEEDED__IDEMPOTENT"
+    options["browser_handoff_transport"] = "ONE_TIME_POST_BODY_CODE_NO_AUTHORITY_IN_URL_V1"
     return options
 
 
@@ -259,7 +274,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
 
 
 @app.get("/checkout/complete/{slug}")
-def checkout_complete(slug: str, session_id: str, request: Request):
+def checkout_complete(slug: str, request: Request, session_id: str | None = None):
     require_secure_transport(request)
     try:
         app_config = core.registry.get(slug)
@@ -268,6 +283,9 @@ def checkout_complete(slug: str, session_id: str, request: Request):
     ensure_commercial_hosted_runnable(app_config)
     if (app_config.get("access") or {}).get("mode") != "BUY_ONCE":
         raise HTTPException(status_code=503, detail="Automatic Checkout handoff supports BUY_ONCE only")
+    if not session_id:
+        body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認</title></head><body><main><h1>購入情報を確認できません</h1><p>Stripeからの購入完了情報がありません。Payment Linkから決済完了ページを開き直してください。</p><p><a href="/a/{html.escape(slug, quote=True)}">購入者アクセスへ戻る</a></p></main></body></html>"""
+        return secure_handoff_html(body, status_code=400)
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Stripe Checkout verification is not configured")
     if len(ENTITLEMENT_COOKIE_SECRET) < 32:
@@ -283,30 +301,38 @@ def checkout_complete(slug: str, session_id: str, request: Request):
     if not checkout_state.claim_checkout(session_id=verified["checkout_session_id"], package_id=verified["package_id"], payment_ref=payment_ref):
         raise HTTPException(status_code=409, detail="This Checkout Session has already been claimed")
     ticket = handoffs.issue(package_id=verified["package_id"], payment_ref=payment_ref)
-    response = RedirectResponse(url=f"/checkout/handoff/{slug}?ticket={quote(ticket, safe='')}", status_code=303)
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
+    return secure_handoff_html(_handoff_page(slug=slug, ticket=ticket, scrub_completion_url=True))
 
 
 @app.get("/checkout/handoff/{slug}")
-def checkout_handoff(slug: str, ticket: str, request: Request):
+def checkout_handoff(slug: str, request: Request):
     require_secure_transport(request)
+    core.enforce_rate_limit(request)
     try:
         core.registry.get(slug)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown app") from None
-    activate_url = f"/checkout/activate/{quote(slug, safe='')}?ticket={quote(ticket, safe='')}"
-    body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>購入確認完了</title><style>body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;color:#111;background:#fff}}main{{max-width:720px;margin:auto;padding:40px 28px}}h1{{font-size:32px}}p{{font-size:18px;line-height:1.65;color:#555}}.card{{border:1px solid #ddd;border-radius:18px;padding:24px;margin-top:28px}}form{{margin:0}}button{{display:block;width:100%;border:0;background:#111;color:#fff;text-align:center;font-size:20px;font-weight:700;padding:18px;border-radius:16px;margin-top:22px}}small{{display:block;margin-top:20px;color:#777;line-height:1.5}}</style></head><body><main><h1>購入確認が完了しました</h1><div class="card"><p><strong>Safariでこの画面を開いてから</strong>、下のボタンを押してください。</p><p>アプリ内ブラウザの場合は、Safariアイコン／「Safariで開く」を使ってこの画面をSafariへ移してください。</p><form method="post" action="{html.escape(activate_url, quote=True)}"><button type="submit">この端末でAIを使う</button></form><small>この受け渡しリンクは約10分・1回だけ有効です。購入者コードを入力する必要はありません。</small></div></main></body></html>"""
-    return secure_handoff_html(body)
+    return secure_handoff_html(_handoff_page(slug=slug))
 
 
 @app.post("/checkout/activate/{slug}")
-def checkout_activate(slug: str, ticket: str, request: Request):
+async def checkout_activate(slug: str, request: Request):
     require_secure_transport(request)
+    core.enforce_rate_limit(request)
+    raw = await request.body()
+    if len(raw) > 4096:
+        raise HTTPException(status_code=413, detail="Browser handoff request is too large")
+    try:
+        form = parse_qs(raw.decode("utf-8"), keep_blank_values=False, strict_parsing=False)
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Browser handoff request is not valid UTF-8") from None
+    ticket_values = form.get("ticket") or []
+    ticket = ticket_values[0].strip() if len(ticket_values) == 1 else ""
+    if not ticket:
+        raise HTTPException(status_code=400, detail="One-time browser handoff code is required")
     payment_ref = handoffs.consume(package_id=slug, ticket=ticket)
     if not payment_ref:
-        raise HTTPException(status_code=409, detail="This browser handoff link is invalid, expired, or already used")
+        raise HTTPException(status_code=409, detail="This browser handoff code is invalid, expired, or already used")
     if not entitlements.authorize_payment(package_id=slug, payment_ref=payment_ref):
         raise HTTPException(status_code=403, detail="Buyer access is no longer active")
     response = RedirectResponse(url=f"/a/{slug}", status_code=303)

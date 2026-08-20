@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+from commercial_preflight import commercial_env_file_findings, live_sale_secret_findings
 from creator_auth import creator_auth_findings
 from deployment_preflight import run_preflight
 from package_knowledge import PACKAGE_TEXT_BACKEND, validate_package_text_binding
@@ -56,7 +57,7 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
         findings.append({
             "code": "HANDOFF_ROUTE_SURFACE_INVALID",
             "scope": "deployment",
-            "message": f"WEB_AI_ROUTE_SURFACE must be {EXPECTED_SURFACE} for browser-handoff dogfood",
+            "message": f"WEB_AI_ROUTE_SURFACE must be {EXPECTED_SURFACE} for browser-handoff/Creator Studio runtime",
         })
 
     if not (BASE_DIR / "commercial_handoff.py").is_file():
@@ -82,14 +83,25 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
             and item.get("scope") in local_scopes
         ):
             continue
-        # Canonical paid gateway deliberately forbids public Studio. The handoff
-        # surface may expose it only when this preflight independently proves
-        # creator-only authentication is configured with private secret files.
         if item.get("code") == "PUBLIC_STUDIO_ENABLED" and creator_auth_protected:
             continue
         base_findings.append(item)
 
-    combined = base_findings + findings + knowledge_findings + creator_findings
+    active_paid_packages = int(result.get("active_paid_packages") or 0)
+    env_file_findings = commercial_env_file_findings(
+        source,
+        active_paid_packages=active_paid_packages,
+        runtime_dir=BASE_DIR,
+    )
+    live_sale_findings = live_sale_secret_findings(source, active_paid_packages=active_paid_packages)
+    combined = (
+        base_findings
+        + findings
+        + knowledge_findings
+        + creator_findings
+        + env_file_findings
+        + live_sale_findings
+    )
     result["findings"] = combined
     result["ok"] = not combined
     result["status"] = "PASS" if not combined else "FAIL"
@@ -98,6 +110,8 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
     result["package_text_knowledge_packages"] = len(local_scopes)
     result["creator_studio_enabled"] = studio_enabled
     result["creator_auth_protected"] = creator_auth_protected and not combined
+    result["commercial_env_file_safe"] = not env_file_findings
+    result["live_sale_secrets_configured"] = not live_sale_findings
     if studio_enabled:
         result["creator_auth_mode"] = "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1" if creator_auth_protected else "INVALID"
     else:
@@ -106,7 +120,7 @@ def run_handoff_preflight(*, env: dict[str, str] | None = None) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run paid browser-handoff deployment preflight")
+    parser = argparse.ArgumentParser(description="Run paid browser-handoff / Creator Studio deployment preflight")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 

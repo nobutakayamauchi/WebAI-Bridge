@@ -196,8 +196,12 @@ def _publish_validated_bundle(*, base, payload: KnowledgeStudioPublishDraft) -> 
         "runtime": activated.get("runtime"),
         "commercial": activated.get("commercial"),
         "checkout_binding_verification": activated.get("checkout_binding_verification"),
-        "checkout_url": checkout.get("payment_link_url"),
+        # Do not hand callers the raw Stripe Payment Link as the normal sale URL:
+        # Hosted v1 must start at the buyer page so /api/buy can bind checkout to
+        # the initiating browser before Stripe returns the Checkout Session id.
+        "checkout_url": f"/api/buy/{slug}",
         "buyer_path": f"/a/{slug}",
+        "stripe_payment_link_configured": bool(checkout.get("payment_link_url")),
         "active_packages": len(base.core.registry.apps),
         "secrets_in_output": False,
     }

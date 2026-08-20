@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import importlib
 import re
 import sys
@@ -64,6 +65,12 @@ def fake_payment_link():
     return {"id": PAYMENT_LINK_ID, "url": PAYMENT_LINK_URL, "metadata": {"webai_package_id": SLUG, "access_mode": "BUY_ONCE"}}
 
 
+def _extract_transfer_code(page: str) -> str:
+    match = re.search(r"<code>(handoff_[^<]+)</code>", page)
+    assert match is not None
+    return html.unescape(match.group(1))
+
+
 def test_signed_cookie_authority_is_revoked_by_database_immediately(gateway):
     module, client = gateway
     module.entitlements.issue(package_id=SLUG, payment_ref="pi_COOKIE", buyer_ref="buyer")
@@ -78,21 +85,27 @@ def test_checkout_handoff_can_be_claimed_once_and_cannot_replay_after_revoke(gat
     module, payment_browser = gateway
     monkeypatch.setattr(module, "retrieve_checkout_session", lambda **kwargs: fake_session())
     monkeypatch.setattr(module, "retrieve_payment_link", lambda **kwargs: fake_payment_link())
+
     first = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
-    assert first.status_code == 303
-    handoff_url = first.headers["location"]
+    assert first.status_code == 200
     assert module.entitlement_cookie_name(SLUG) not in first.headers.get("set-cookie", "")
+    assert f"/checkout/handoff/{SLUG}?ticket=" not in first.text
+    transfer_code = _extract_transfer_code(first.text)
+
     safari = TestClient(module.app)
-    landing = safari.get(handoff_url)
-    match = re.search(r'action="([^"]*checkout/activate/[^"]+)"', landing.text)
-    assert match is not None
-    activate_url = match.group(1).replace("&amp;", "&")
+    landing = safari.get(f"/checkout/handoff/{SLUG}")
+    assert landing.status_code == 200
+    assert transfer_code not in landing.text
+    activate_url = f"/checkout/activate/{SLUG}"
     assert safari.get(activate_url, follow_redirects=False).status_code == 405
-    activated = safari.post(activate_url, follow_redirects=False)
+
+    activated = safari.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False)
     assert activated.status_code == 303
     assert module.entitlement_cookie_name(SLUG) in activated.headers.get("set-cookie", "")
+    assert "ticket=" not in activated.headers.get("location", "")
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
-    assert payment_browser.post(activate_url, follow_redirects=False).status_code == 409
+
+    assert payment_browser.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False).status_code == 409
     duplicate_checkout = payment_browser.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False)
     assert duplicate_checkout.status_code == 409
     assert module.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1

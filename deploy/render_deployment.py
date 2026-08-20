@@ -12,6 +12,71 @@ DOMAIN_RE = re.compile(
 REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 UNIX_NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 SAFE_ABSOLUTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+COMMERCIAL_ENV_FILE = "/etc/webai-bridge/webai-bridge.env"
+TRUSTED_EXEC_PATH = "/usr/bin:/bin"
+
+# EnvironmentFile= has higher precedence than Environment= in systemd. These
+# names therefore cannot be protected by placing Environment= assignments after
+# EnvironmentFile=. They are removed at systemd's final environment assembly
+# step with UnsetEnvironment= and canonical controls are injected by the
+# absolute /usr/bin/env command in ExecStartPre=/ExecStart=.
+EXECUTION_HAZARD_ENV_KEYS = (
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONUSERBASE",
+    "PYTHONNOUSERSITE",
+    "PATH",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SSLKEYLOGFILE",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID",
+    "OPENAI_CUSTOM_HEADERS",
+    "OPENAI_LOG",
+    "WEB_CONCURRENCY",
+    "FORWARDED_ALLOW_IPS",
+    "UVICORN_RELOAD",
+    "UVICORN_WORKERS",
+    "UVICORN_ENV_FILE",
+    "UVICORN_APP_DIR",
+    "UVICORN_FACTORY",
+    "UVICORN_PROXY_HEADERS",
+    "UVICORN_FORWARDED_ALLOW_IPS",
+    "UVICORN_ACCESS_LOG",
+    "UVICORN_SSL_KEYFILE",
+    "UVICORN_SSL_CERTFILE",
+    "UVICORN_SSL_CA_CERTS",
+    "UVICORN_ROOT_PATH",
+)
 
 
 def _absolute(path_value: str, label: str) -> Path:
@@ -56,34 +121,164 @@ def validate_inputs(*, domain: str, runtime_dir: str, state_dir: str, revision: 
     }
 
 
-def render_systemd(values: dict) -> str:
+def _deployment_profile(*, creator_studio: bool) -> dict:
+    if creator_studio:
+        return {
+            "profile": "CREATOR_STUDIO_COMMERCIAL_V1",
+            "route_surface": "commercial_handoff:app",
+            "entrypoint": "commercial_handoff:app",
+            "preflight": "deployment_preflight_handoff.py",
+            "studio_enabled": True,
+            "creator_auth_enabled": True,
+            "package_authority": "STATE_DIR",
+        }
+    return {
+        "profile": "BUYER_ONLY_COMMERCIAL_V1",
+        "route_surface": "commercial_bound:app",
+        "entrypoint": "commercial_bound:app",
+        "preflight": "deployment_preflight_bound.py",
+        "studio_enabled": False,
+        "creator_auth_enabled": False,
+        "package_authority": "RUNTIME_DIR",
+    }
+
+
+def _config_dir(values: dict, *, creator_studio: bool) -> str:
+    if creator_studio:
+        return f"{values['state_dir']}/apps"
+    return f"{values['runtime_dir']}/apps"
+
+
+def _fixed_runtime_environment(values: dict, *, creator_studio: bool) -> dict[str, str]:
     runtime = values["runtime_dir"]
     state = values["state_dir"]
-    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Optional operator-supplied Knowledge/provider bindings are loaded first.\n# The locked deployment identity/security values below intentionally override\n# same-named entries from this file.\nEnvironmentFile=-/etc/webai-bridge/webai-bridge.env\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=WEB_AI_SERVICE_UNIT=webai-bridge.service\nEnvironment=WEB_AI_WORKING_DIRECTORY={runtime}\nEnvironment=WEB_AI_ROUTE_SURFACE=commercial:app\nEnvironment=WEB_AI_CONFIG_DIR={runtime}/apps\nEnvironment=WEB_AI_ENTITLEMENT_DB={state}/entitlements.sqlite3\nEnvironment=WEB_AI_LEDGER_PATH={state}/ledger.sqlite3\nEnvironment=WEB_AI_DIAGNOSTICS_ENABLED=0\nEnvironment=WEB_AI_STUDIO_ENABLED=0\nEnvironment=WEB_AI_ALLOW_INSECURE_HTTP=0\nEnvironment=DEPLOYED_REVISION={values['revision']}\nExecStartPre={runtime}/.venv/bin/python {runtime}/deployment_preflight.py\nExecStart={runtime}/.venv/bin/uvicorn commercial:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
+    profile = _deployment_profile(creator_studio=creator_studio)
+    fixed = {
+        "WEB_AI_ENV_FILE": COMMERCIAL_ENV_FILE,
+        "PYTHONUNBUFFERED": "1",
+        "WEB_AI_SERVICE_UNIT": "webai-bridge.service",
+        "WEB_AI_WORKING_DIRECTORY": runtime,
+        "WEB_AI_ROUTE_SURFACE": profile["route_surface"],
+        "WEB_AI_CONFIG_DIR": _config_dir(values, creator_studio=creator_studio),
+        "WEB_AI_PRICING_FILE": f"{runtime}/pricing.json",
+        "WEB_AI_ENTITLEMENT_DB": f"{state}/entitlements.sqlite3",
+        "WEB_AI_LEDGER_PATH": f"{state}/ledger.sqlite3",
+        "WEB_AI_HANDOFF_DB": f"{state}/handoff.sqlite3",
+        "WEB_AI_CHECKOUT_STATE_DB": f"{state}/checkout-state.sqlite3",
+        "WEB_AI_REQUESTS_PER_MINUTE": "20",
+        "WEB_AI_BYOK_SESSION_TTL_SECONDS": "900",
+        "WEB_AI_BYOK_SESSION_MAX": "1000",
+        "WEB_AI_HANDOFF_TTL_SECONDS": "600",
+        "WEB_AI_ENTITLEMENT_COOKIE_MAX_AGE_SECONDS": "31536000",
+        "WEB_AI_DIAGNOSTICS_ENABLED": "0",
+        "WEB_AI_STUDIO_ENABLED": "1" if profile["studio_enabled"] else "0",
+        "WEB_AI_CREATOR_AUTH_ENABLED": "1" if profile["creator_auth_enabled"] else "0",
+        "WEB_AI_ALLOW_INSECURE_HTTP": "0",
+        "DEPLOYED_REVISION": values["revision"],
+    }
+    if creator_studio:
+        fixed.update(
+            {
+                "WEB_AI_CREATOR_PASSWORD_FILE": f"{state}/creator-password.secret",
+                "WEB_AI_CREATOR_SESSION_SECRET_FILE": f"{state}/creator-session.secret",
+                "WEB_AI_CREATOR_SESSION_TTL_SECONDS": "43200",
+            }
+        )
+    return fixed
+
+
+def _exec_environment_prefix(fixed: dict[str, str]) -> str:
+    assignments = [
+        f"PATH={TRUSTED_EXEC_PATH}",
+        "PYTHONNOUSERSITE=1",
+        *(f"{key}={value}" for key, value in fixed.items()),
+    ]
+    return "/usr/bin/env " + " ".join(assignments)
+
+
+def _production_server_command(runtime: str, profile: dict) -> str:
+    return (
+        f"{runtime}/.venv/bin/python {runtime}/production_server.py "
+        f"{profile['entrypoint']} --no-access-log"
+    )
+
+
+def render_systemd(values: dict, *, creator_studio: bool = False) -> str:
+    runtime = values["runtime_dir"]
+    state = values["state_dir"]
+    profile = _deployment_profile(creator_studio=creator_studio)
+    fixed = _fixed_runtime_environment(values, creator_studio=creator_studio)
+    fixed_lines = "".join(f"Environment={key}={value}\n" for key, value in fixed.items())
+    protected_names = (*EXECUTION_HAZARD_ENV_KEYS, *fixed.keys())
+    unset_line = "UnsetEnvironment=" + " ".join(dict.fromkeys(protected_names))
+    exec_env = _exec_environment_prefix(fixed)
+
+    if creator_studio:
+        server_command = _production_server_command(runtime, profile)
+    else:
+        # Buyer-only remains deterministic on the direct CLI surface; Hosted v1
+        # production deployment uses Creator Studio and the pinned launcher.
+        server_command = (
+            f"{runtime}/.venv/bin/uvicorn {profile['entrypoint']} --host 127.0.0.1 "
+            "--port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 "
+            "--workers 1 --no-access-log"
+        )
+
+    return f"""[Unit]\nDescription=WebAI Bridge Commercial Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser={values['user']}\nGroup={values['group']}\nUMask=0077\nWorkingDirectory={runtime}\n# Operator-supplied secrets are loaded from this file; execution/security policy\n# is removed at final systemd environment assembly and rebound below.\nEnvironmentFile=-{COMMERCIAL_ENV_FILE}\n{fixed_lines}{unset_line}\nExecStartPre={exec_env} {runtime}/.venv/bin/python {runtime}/{profile['preflight']}\n# Hosted v1 Creator Studio uses a programmatic single-worker launcher so Uvicorn\n# CLI environment variables cannot silently grow workers/reload or alter proxy\n# trust. The inert command tokens remain visible for runtime identity evidence.\nExecStart={exec_env} {server_command}\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths={state}\n\n[Install]\nWantedBy=multi-user.target\n"""
 
 
 def render_caddy(values: dict) -> str:
     return f"""{values['domain']} {{\n    encode zstd gzip\n    reverse_proxy 127.0.0.1:8080\n}}\n"""
 
 
-def render_manifest(values: dict) -> str:
+def render_manifest(values: dict, *, creator_studio: bool = False) -> str:
+    profile = _deployment_profile(creator_studio=creator_studio)
     manifest = {
-        "schema": "webai-deployment-v0",
+        "schema": "webai-deployment-v1",
+        "profile": profile["profile"],
         "domain": values["domain"],
         "runtime_dir": values["runtime_dir"],
         "state_dir": values["state_dir"],
+        "config_dir": _config_dir(values, creator_studio=creator_studio),
+        "package_authority": profile["package_authority"],
+        "commercial_env_file": COMMERCIAL_ENV_FILE,
         "revision": values["revision"],
         "service_unit": "webai-bridge.service",
-        "route_surface": "commercial:app",
-        "studio_public": False,
+        "route_surface": profile["route_surface"],
+        "creator_studio_enabled": profile["studio_enabled"],
+        "creator_auth_required": profile["creator_auth_enabled"],
+        "creator_auth_mode": "SINGLE_CREATOR_PASSWORD_FILE_SIGNED_SESSION_V1" if creator_studio else "DISABLED",
         "diagnostics_public": False,
         "insecure_http_allowed": False,
+        "checkout_browser_binding": "STRIPE_CLIENT_REFERENCE_PLUS_HTTPONLY_COOKIE_V1",
+        "uvicorn_access_log_enabled": False,
+        "query_authority_retention": False,
+        "environment_authority": "SYSTEMD_UNSET_THEN_EXEC_REBIND_V1",
+        "server_authority": "PROGRAMMATIC_SINGLE_WORKER_V1" if creator_studio else "CLI_SINGLE_WORKER_V1",
+        "runtime_policy": {
+            "requests_per_minute": 20,
+            "byok_session_ttl_seconds": 900,
+            "byok_session_max": 1000,
+            "handoff_ttl_seconds": 600,
+            "entitlement_cookie_max_age_seconds": 31536000,
+        },
+        "state_databases": {
+            "entitlements": f"{values['state_dir']}/entitlements.sqlite3",
+            "ledger": f"{values['state_dir']}/ledger.sqlite3",
+            "handoff": f"{values['state_dir']}/handoff.sqlite3",
+            "checkout_state": f"{values['state_dir']}/checkout-state.sqlite3",
+        },
         "secret_values_in_manifest": False,
     }
+    if creator_studio:
+        manifest["creator_auth_files"] = {
+            "password": f"{values['state_dir']}/creator-password.secret",
+            "session_secret": f"{values['state_dir']}/creator-session.secret",
+        }
     return json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
 
 
-def write_outputs(values: dict, output_dir: Path) -> dict:
+def write_outputs(values: dict, output_dir: Path, *, creator_studio: bool = False) -> dict:
     if output_dir.exists() and output_dir.is_symlink():
         raise ValueError("output_dir must not be a symlink")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -93,9 +288,9 @@ def write_outputs(values: dict, output_dir: Path) -> dict:
         raise ValueError("output_dir must not be world-writable")
 
     files = {
-        "webai-bridge.service": render_systemd(values),
+        "webai-bridge.service": render_systemd(values, creator_studio=creator_studio),
         "Caddyfile": render_caddy(values),
-        "deployment-manifest.json": render_manifest(values),
+        "deployment-manifest.json": render_manifest(values, creator_studio=creator_studio),
     }
     destinations = {name: output_dir / name for name in files}
     for destination in destinations.values():
@@ -126,6 +321,11 @@ def main() -> int:
     parser.add_argument("--user", default="webai")
     parser.add_argument("--group", default="webai")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--creator-studio",
+        action="store_true",
+        help="Expose the creator-authenticated Knowledge Studio/direct-publish surface on the production host",
+    )
     args = parser.parse_args()
 
     try:
@@ -137,11 +337,17 @@ def main() -> int:
             user=args.user,
             group=args.group,
         )
-        written = write_outputs(values, Path(args.output_dir))
+        written = write_outputs(values, Path(args.output_dir), creator_studio=args.creator_studio)
     except ValueError as exc:
         parser.error(str(exc))
 
-    print(json.dumps({"rendered": True, "values": values, "files": written}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "rendered": True,
+        "values": values,
+        "profile": _deployment_profile(creator_studio=args.creator_studio)["profile"],
+        "files": written,
+        "secrets_in_output": False,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
