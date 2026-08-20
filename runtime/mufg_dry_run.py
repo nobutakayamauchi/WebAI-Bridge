@@ -11,7 +11,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Normalize a saved MUFG payment-arrivals JSON response without granting access.")
     parser.add_argument("json_path", type=Path)
     parser.add_argument("--account-id", required=True)
-    parser.add_argument("--order-ref-source", choices=["ediInfo", "paymentApplicantNo"], default="paymentApplicantNo")
+    parser.add_argument("--order-ref-source", choices=["auto", "ediInfo", "paymentApplicantNo"], default="auto")
     parser.add_argument("--currency", default="JPY")
     parser.add_argument("--show", type=int, default=5)
     args = parser.parse_args()
@@ -27,10 +27,12 @@ def main() -> int:
     print(json.dumps({
         "status": "DRY_RUN_ONLY",
         "normalized_count": len(batch.deposits),
+        "unmatchable_count": len(batch.unmatchable),
         "declared_number": batch.declared_number,
         "next_flag": batch.next_flag,
         "next_keyword": batch.next_keyword,
         "sample": list(batch.deposits[:max(0, args.show)]),
+        "unmatchable_sample": list(batch.unmatchable[:max(0, args.show)]),
     }, ensure_ascii=False, indent=2))
     return 0
 
