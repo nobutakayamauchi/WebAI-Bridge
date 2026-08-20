@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+import sqlite3
 from typing import Any, Mapping
 
 
 PAID = "PAID"
 SETTLED = "SETTLED"
+CLAIMED = "CLAIMED"
+REPLAY_SAME = "REPLAY_SAME"
 
 
 class PaymentVerificationError(ValueError):
@@ -40,6 +44,90 @@ class VerifiedPaymentEvent:
             "payment_ref": self.payment_ref,
             "buyer_ref": self.buyer_ref,
         }
+
+
+class BankTransactionClaimStore:
+    """Durably bind one bank transaction identity to one payment authority.
+
+    Exact provider replays for the same order/package/amount/currency are
+    idempotent. Reusing the same bank transaction for a different order or
+    product fails closed.
+
+    Invariant: ONE BANK TRANSACTION = ONE PAYMENT AUTHORITY.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bank_transaction_claims (
+                    provider TEXT NOT NULL,
+                    transaction_ref TEXT NOT NULL,
+                    order_ref TEXT NOT NULL,
+                    package_id TEXT NOT NULL,
+                    buyer_ref TEXT NOT NULL DEFAULT '',
+                    amount_minor INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    PRIMARY KEY(provider, transaction_ref)
+                )
+                """
+            )
+
+    def _connect(self):
+        conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def claim(self, event: VerifiedPaymentEvent) -> str:
+        if not event.payment_ref.startswith("bank:"):
+            raise PaymentVerificationError("bank transaction claim store only accepts bank payment events")
+        order_ref = _required_text(event.metadata.get("order_ref"), field_name="metadata.order_ref")
+        expected = (
+            event.provider,
+            event.event_ref,
+            order_ref,
+            event.package_id,
+            event.buyer_ref,
+            event.amount_minor,
+            event.currency,
+        )
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO bank_transaction_claims
+                    (provider, transaction_ref, order_ref, package_id, buyer_ref, amount_minor, currency)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    expected,
+                )
+            return CLAIMED
+        except sqlite3.IntegrityError:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT provider, transaction_ref, order_ref, package_id, buyer_ref, amount_minor, currency
+                    FROM bank_transaction_claims
+                    WHERE provider=? AND transaction_ref=?
+                    """,
+                    (event.provider, event.event_ref),
+                ).fetchone()
+            if row is None:
+                raise PaymentVerificationError("bank transaction claim conflict could not be resolved") from None
+            actual = (
+                row["provider"],
+                row["transaction_ref"],
+                row["order_ref"],
+                row["package_id"],
+                row["buyer_ref"],
+                int(row["amount_minor"]),
+                row["currency"],
+            )
+            if actual == expected:
+                return REPLAY_SAME
+            raise PaymentVerificationError("bank transaction was already claimed by different payment authority") from None
 
 
 def _required_text(value: Any, *, field_name: str) -> str:
