@@ -2,7 +2,7 @@ import hashlib
 
 import pytest
 
-from mufg_payment_adapter import normalize_mufg_payment_arrival
+from mufg_payment_adapter import normalize_mufg_payment_arrival, normalize_mufg_payment_arrivals_response
 from payment_adapter import PaymentVerificationError
 
 
@@ -41,6 +41,13 @@ def test_official_mufg_142_payment_arrival_normalizes_to_deposit():
         "currency": "JPY",
         "status": "SETTLED",
     }
+
+
+def test_auto_order_reference_falls_back_to_payment_applicant_number():
+    record = raw()
+    del record["ediInfo"]
+    deposit = normalize_mufg_payment_arrival(raw=record, account_id=ACCOUNT_ID)
+    assert deposit["order_ref"] == "1234567890"
 
 
 def test_payment_applicant_number_can_be_explicit_order_reference():
@@ -88,3 +95,40 @@ def test_record_cannot_supply_currency_or_product_authority():
     )
     assert deposit["currency"] == "JPY"
     assert "package_id" not in deposit
+
+
+def test_full_trial_response_normalizes_all_arrivals():
+    response = {
+        "nextFlag": "0",
+        "number": 2,
+        "accountInfo": {"branchNo": "777", "accountNo": "7777777"},
+        "paymentArrivals": [
+            raw(transactionDate="2024-03-01", transactionId="1", ediInfo="EDI-ORDER-1", amount=100000),
+            {
+                "transactionDate": "2024-03-01",
+                "designatedDate": "2024-03-01",
+                "transactionId": "2",
+                "transactionType": "ヨキンキ",
+                "applicantName": "フツウニユウキンフリコミニン０２",
+                "paymentApplicantNo": "160301",
+                "debitCreditTypeCode": "1",
+                "amount": 200000,
+            },
+        ],
+    }
+    deposits = normalize_mufg_payment_arrivals_response(response=response, account_id="77717777777")
+    assert len(deposits) == 2
+    assert deposits[0]["order_ref"] == "EDI-ORDER-1"
+    assert deposits[1]["order_ref"] == "160301"
+    assert deposits[1]["amount_minor"] == 200000
+
+
+def test_response_count_mismatch_fails_closed():
+    response = {"number": 2, "paymentArrivals": [raw()]}
+    with pytest.raises(PaymentVerificationError, match="does not match"):
+        normalize_mufg_payment_arrivals_response(response=response, account_id=ACCOUNT_ID)
+
+
+def test_missing_payment_arrivals_fails_closed():
+    with pytest.raises(PaymentVerificationError, match="missing paymentArrivals"):
+        normalize_mufg_payment_arrivals_response(response={"number": 0}, account_id=ACCOUNT_ID)
