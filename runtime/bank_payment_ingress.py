@@ -17,6 +17,8 @@ class BankOrder:
     amount_minor: int
     currency: str
     status: str = "AWAITING_PAYMENT"
+    claim_hash: str = ""
+    payment_ref: str = ""
 
     def as_mapping(self) -> dict[str, Any]:
         return {
@@ -32,8 +34,9 @@ class BankOrder:
 class BankOrderStore:
     """Durable authority for bank-transfer orders.
 
-    A bank adapter is never allowed to invent package, buyer, or expected amount
-    from deposit payloads. The order store is the server-side source of truth.
+    A bank adapter is never allowed to invent package, buyer, expected amount,
+    browser claim authority, or payment_ref from deposit payloads. The order
+    store is the server-side source of truth.
     """
 
     def __init__(self, path: Path):
@@ -48,10 +51,17 @@ class BankOrderStore:
                     buyer_ref TEXT NOT NULL DEFAULT '',
                     amount_minor INTEGER NOT NULL,
                     currency TEXT NOT NULL,
-                    status TEXT NOT NULL
+                    status TEXT NOT NULL,
+                    claim_hash TEXT NOT NULL DEFAULT '',
+                    payment_ref TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(bank_orders)").fetchall()}
+            if "claim_hash" not in columns:
+                conn.execute("ALTER TABLE bank_orders ADD COLUMN claim_hash TEXT NOT NULL DEFAULT ''")
+            if "payment_ref" not in columns:
+                conn.execute("ALTER TABLE bank_orders ADD COLUMN payment_ref TEXT NOT NULL DEFAULT ''")
 
     def _connect(self):
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -63,8 +73,17 @@ class BankOrderStore:
             raise ValueError("invalid bank order")
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO bank_orders(order_ref, package_id, buyer_ref, amount_minor, currency, status) VALUES (?, ?, ?, ?, ?, ?)",
-                (order.order_ref, order.package_id, order.buyer_ref, order.amount_minor, order.currency.upper(), order.status),
+                "INSERT INTO bank_orders(order_ref, package_id, buyer_ref, amount_minor, currency, status, claim_hash, payment_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    order.order_ref,
+                    order.package_id,
+                    order.buyer_ref,
+                    order.amount_minor,
+                    order.currency.upper(),
+                    order.status,
+                    order.claim_hash,
+                    order.payment_ref,
+                ),
             )
 
     def get(self, order_ref: str) -> BankOrder | None:
@@ -73,13 +92,24 @@ class BankOrderStore:
         if row is None:
             return None
         return BankOrder(
-            order_ref=row["order_ref"], package_id=row["package_id"], buyer_ref=row["buyer_ref"],
-            amount_minor=int(row["amount_minor"]), currency=row["currency"], status=row["status"],
+            order_ref=row["order_ref"],
+            package_id=row["package_id"],
+            buyer_ref=row["buyer_ref"],
+            amount_minor=int(row["amount_minor"]),
+            currency=row["currency"],
+            status=row["status"],
+            claim_hash=row["claim_hash"],
+            payment_ref=row["payment_ref"],
         )
 
-    def mark_paid(self, order_ref: str) -> None:
+    def mark_paid(self, order_ref: str, payment_ref: str = "") -> None:
         with self._connect() as conn:
-            conn.execute("UPDATE bank_orders SET status='PAID' WHERE order_ref=?", (order_ref,))
+            cursor = conn.execute(
+                "UPDATE bank_orders SET status='PAID', payment_ref=? WHERE order_ref=? AND status IN ('PENDING','AWAITING_PAYMENT')",
+                (payment_ref, order_ref),
+            )
+            if cursor.rowcount != 1:
+                raise PaymentVerificationError("bank order could not transition to PAID")
 
 
 class BankPaymentIngress:
@@ -107,5 +137,5 @@ class BankPaymentIngress:
 
         event = verify_bank_transfer(deposit=deposit, order=order.as_mapping())
         result = fulfill_verified_payment(event=event, entitlements=self.entitlements, bank_claims=self.claims)
-        self.orders.mark_paid(order_ref)
+        self.orders.mark_paid(order_ref, payment_ref=result.payment_ref)
         return result
