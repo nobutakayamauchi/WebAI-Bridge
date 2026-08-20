@@ -1,63 +1,90 @@
+import hashlib
+
 import pytest
 
-from mufg_payment_adapter import MUFGPaymentArrivalFieldMap, normalize_mufg_payment_arrival
+from mufg_payment_adapter import normalize_mufg_payment_arrival
 from payment_adapter import PaymentVerificationError
 
 
-FIELDS = MUFGPaymentArrivalFieldMap(
-    transaction_ref="providerTxnId",
-    amount_minor="amountYen",
-    currency="currencyCode",
-    status="arrivalStatus",
-    order_ref="customerReference",
-)
+ACCOUNT_ID = "12345678901"
 
 
 def raw(**changes):
     value = {
-        "providerTxnId": "MUFG-ARRIVAL-0001",
-        "amountYen": "300000",
-        "currencyCode": "JPY",
-        "arrivalStatus": "BOOKED",
-        "customerReference": "order-300k",
-        "untrustedProductId": "attacker-product",
-        "untrustedBuyer": "attacker@example.test",
+        "transactionDate": "2026-08-20",
+        "designatedDate": "2026-08-20",
+        "transactionId": "234",
+        "transactionType": "振込",
+        "applicantName": "テストカブシキガイシヤ",
+        "paymentFinancialInstitutionNameKana": "テストギンコウ",
+        "branchNameKana": "ホンテン",
+        "paymentApplicantNo": "1234567890",
+        "ediInfo": "order-300k",
+        "debitCreditTypeCode": "1",
+        "amount": 300000,
     }
     value.update(changes)
     return value
 
 
-def test_mufg_record_normalizes_only_payment_evidence():
-    deposit = normalize_mufg_payment_arrival(raw=raw(), field_map=FIELDS, settled_values={"BOOKED"})
+def expected_ref(date="2026-08-20", transaction_id="234"):
+    return hashlib.sha256(f"{ACCOUNT_ID}|{date}|{transaction_id}".encode()).hexdigest()
+
+
+def test_official_mufg_142_payment_arrival_normalizes_to_deposit():
+    deposit = normalize_mufg_payment_arrival(raw=raw(), account_id=ACCOUNT_ID)
     assert deposit == {
         "provider": "MUFG",
-        "transaction_ref": "MUFG-ARRIVAL-0001",
+        "transaction_ref": expected_ref(),
         "order_ref": "order-300k",
         "amount_minor": 300000,
         "currency": "JPY",
         "status": "SETTLED",
     }
-    assert "package_id" not in deposit
-    assert "buyer_ref" not in deposit
 
 
-def test_mufg_nonsettled_status_fails_closed():
-    with pytest.raises(PaymentVerificationError, match="not settled"):
-        normalize_mufg_payment_arrival(raw=raw(arrivalStatus="PENDING"), field_map=FIELDS, settled_values={"BOOKED"})
+def test_payment_applicant_number_can_be_explicit_order_reference():
+    deposit = normalize_mufg_payment_arrival(
+        raw=raw(ediInfo="ignored"),
+        account_id=ACCOUNT_ID,
+        order_ref_source="paymentApplicantNo",
+    )
+    assert deposit["order_ref"] == "1234567890"
 
 
-def test_mufg_missing_mapped_field_fails_closed():
+def test_outgoing_record_fails_closed():
+    with pytest.raises(PaymentVerificationError, match="not an incoming"):
+        normalize_mufg_payment_arrival(raw=raw(debitCreditTypeCode="2"), account_id=ACCOUNT_ID)
+
+
+def test_missing_transaction_identity_fails_closed():
     record = raw()
-    del record["providerTxnId"]
-    with pytest.raises(PaymentVerificationError, match="missing mapped field"):
-        normalize_mufg_payment_arrival(raw=record, field_map=FIELDS, settled_values={"BOOKED"})
+    del record["transactionId"]
+    with pytest.raises(PaymentVerificationError, match="transactionId"):
+        normalize_mufg_payment_arrival(raw=record, account_id=ACCOUNT_ID)
 
 
-def test_mufg_requires_explicit_settled_mapping():
-    with pytest.raises(PaymentVerificationError, match="settled status mapping"):
-        normalize_mufg_payment_arrival(raw=raw(), field_map=FIELDS, settled_values=set())
+def test_account_id_must_match_official_path_shape():
+    with pytest.raises(PaymentVerificationError, match="11 characters"):
+        normalize_mufg_payment_arrival(raw=raw(), account_id="123")
 
 
-def test_mufg_rejects_nonpositive_amount():
+def test_zero_amount_fails_closed():
     with pytest.raises(PaymentVerificationError, match="positive"):
-        normalize_mufg_payment_arrival(raw=raw(amountYen="0"), field_map=FIELDS, settled_values={"BOOKED"})
+        normalize_mufg_payment_arrival(raw=raw(amount=0), account_id=ACCOUNT_ID)
+
+
+def test_transaction_identity_changes_across_dates():
+    first = normalize_mufg_payment_arrival(raw=raw(transactionDate="2026-08-20"), account_id=ACCOUNT_ID)
+    second = normalize_mufg_payment_arrival(raw=raw(transactionDate="2026-08-21"), account_id=ACCOUNT_ID)
+    assert first["transaction_ref"] != second["transaction_ref"]
+
+
+def test_record_cannot_supply_currency_or_product_authority():
+    deposit = normalize_mufg_payment_arrival(
+        raw=raw(currency="USD", package_id="attacker-product"),
+        account_id=ACCOUNT_ID,
+        currency="JPY",
+    )
+    assert deposit["currency"] == "JPY"
+    assert "package_id" not in deposit
