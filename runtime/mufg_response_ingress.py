@@ -10,38 +10,41 @@ from payment_adapter import PaymentVerificationError
 @dataclass(frozen=True)
 class MUFGBatch:
     deposits: tuple[dict[str, Any], ...]
+    unmatchable: tuple[dict[str, Any], ...]
     next_flag: str
     next_keyword: str | None
     declared_number: int
+
+
+def _candidate_sources(preferred: str) -> tuple[str, ...]:
+    if preferred == "auto":
+        return ("paymentApplicantNo", "ediInfo")
+    if preferred == "paymentApplicantNo":
+        return ("paymentApplicantNo", "ediInfo")
+    if preferred == "ediInfo":
+        return ("ediInfo", "paymentApplicantNo")
+    raise PaymentVerificationError("MUFG order reference source must be auto, ediInfo, or paymentApplicantNo")
 
 
 def normalize_mufg_payment_arrivals_response(
     *,
     response: Mapping[str, Any],
     account_id: str,
-    order_ref_source: str = "paymentApplicantNo",
+    order_ref_source: str = "auto",
     currency: str = "JPY",
 ) -> MUFGBatch:
     """Normalize one MUFG Account API v1.4.2 payment-arrivals response page.
 
-    This boundary is intentionally non-fulfilling: it never grants entitlement.
-    It only validates the provider page shape and converts each PaymentArrival
-    into the generic bank deposit contract. Matching to a server-side order and
-    fulfillment happens later.
-
-    Fail-closed invariants:
-    - response.number must equal the actual paymentArrivals array length;
-    - nextFlag must be 0 or 1;
-    - nextFlag=1 requires a non-empty nextKeyword;
-    - every record must normalize successfully; partial acceptance is forbidden.
+    Page-structure corruption fails closed. Individual incoming deposits that are
+    otherwise valid but contain neither supported order-reference field are
+    quarantined as unmatchable and can never reach fulfillment.
     """
     arrivals = response.get("paymentArrivals")
     if not isinstance(arrivals, list):
         raise PaymentVerificationError("MUFG response paymentArrivals must be an array")
 
-    raw_number = response.get("number")
     try:
-        declared_number = int(raw_number)
+        declared_number = int(response.get("number"))
     except (TypeError, ValueError) as exc:
         raise PaymentVerificationError("MUFG response number must be an integer") from exc
     if declared_number != len(arrivals):
@@ -55,17 +58,46 @@ def normalize_mufg_payment_arrivals_response(
     if next_flag == "1" and not next_keyword:
         raise PaymentVerificationError("MUFG response nextFlag=1 requires nextKeyword")
 
-    deposits = tuple(
-        normalize_mufg_payment_arrival(
-            raw=record,
-            account_id=account_id,
-            order_ref_source=order_ref_source,
-            currency=currency,
-        )
-        for record in arrivals
-    )
+    sources = _candidate_sources(order_ref_source)
+    deposits: list[dict[str, Any]] = []
+    unmatchable: list[dict[str, Any]] = []
+
+    for index, record in enumerate(arrivals):
+        if not isinstance(record, Mapping):
+            raise PaymentVerificationError("MUFG payment arrival record must be an object")
+
+        normalized = None
+        last_reference_error: PaymentVerificationError | None = None
+        for source in sources:
+            try:
+                normalized = normalize_mufg_payment_arrival(
+                    raw=record,
+                    account_id=account_id,
+                    order_ref_source=source,
+                    currency=currency,
+                )
+                break
+            except PaymentVerificationError as exc:
+                message = str(exc)
+                if "missing ediInfo" in message or "missing paymentApplicantNo" in message or "order reference is empty" in message:
+                    last_reference_error = exc
+                    continue
+                raise
+
+        if normalized is None:
+            unmatchable.append({
+                "index": index,
+                "transactionDate": record.get("transactionDate"),
+                "transactionId": record.get("transactionId"),
+                "amount": record.get("amount"),
+                "reason": str(last_reference_error or "missing supported order reference"),
+            })
+            continue
+        deposits.append(normalized)
+
     return MUFGBatch(
-        deposits=deposits,
+        deposits=tuple(deposits),
+        unmatchable=tuple(unmatchable),
         next_flag=next_flag,
         next_keyword=next_keyword,
         declared_number=declared_number,
