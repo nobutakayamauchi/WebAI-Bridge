@@ -26,6 +26,13 @@ def _candidate_sources(preferred: str) -> tuple[str, ...]:
     raise PaymentVerificationError("MUFG order reference source must be auto, ediInfo, or paymentApplicantNo")
 
 
+def _has_reference(record: Mapping[str, Any], source: str) -> bool:
+    value = record.get(source)
+    if value is None:
+        return False
+    return bool(str(value).strip())
+
+
 def normalize_mufg_payment_arrivals_response(
     *,
     response: Mapping[str, Any],
@@ -38,6 +45,11 @@ def normalize_mufg_payment_arrivals_response(
     Page-structure corruption fails closed. Individual incoming deposits that are
     otherwise valid but contain neither supported order-reference field are
     quarantined as unmatchable and can never reach fulfillment.
+
+    MUFG trial/real response nuance: paymentApplicantNo and ediInfo are optional
+    alternatives. Selection is based on field presence before calling the strict
+    single-record normalizer, so an explicitly-null first-choice field cannot
+    block fallback to the other supported reference.
     """
     arrivals = response.get("paymentArrivals")
     if not isinstance(arrivals, list):
@@ -66,33 +78,35 @@ def normalize_mufg_payment_arrivals_response(
         if not isinstance(record, Mapping):
             raise PaymentVerificationError("MUFG payment arrival record must be an object")
 
-        normalized = None
-        last_reference_error: PaymentVerificationError | None = None
-        for source in sources:
-            try:
-                normalized = normalize_mufg_payment_arrival(
-                    raw=record,
-                    account_id=account_id,
-                    order_ref_source=source,
-                    currency=currency,
-                )
-                break
-            except PaymentVerificationError as exc:
-                message = str(exc)
-                if "missing ediInfo" in message or "missing paymentApplicantNo" in message or "order reference is empty" in message:
-                    last_reference_error = exc
-                    continue
-                raise
-
-        if normalized is None:
+        selected_source = next((source for source in sources if _has_reference(record, source)), None)
+        if selected_source is None:
+            # Validate all non-reference payment evidence before quarantining. A
+            # malformed/outgoing record must never be disguised as merely
+            # unmatchable, so inject a harmless temporary reference solely for
+            # strict structural validation.
+            validation_record = dict(record)
+            validation_record["paymentApplicantNo"] = "__UNMATCHABLE_VALIDATION__"
+            normalize_mufg_payment_arrival(
+                raw=validation_record,
+                account_id=account_id,
+                order_ref_source="paymentApplicantNo",
+                currency=currency,
+            )
             unmatchable.append({
                 "index": index,
                 "transactionDate": record.get("transactionDate"),
                 "transactionId": record.get("transactionId"),
                 "amount": record.get("amount"),
-                "reason": str(last_reference_error or "missing supported order reference"),
+                "reason": "missing supported order reference",
             })
             continue
+
+        normalized = normalize_mufg_payment_arrival(
+            raw=record,
+            account_id=account_id,
+            order_ref_source=selected_source,
+            currency=currency,
+        )
         deposits.append(normalized)
 
     return MUFGBatch(
