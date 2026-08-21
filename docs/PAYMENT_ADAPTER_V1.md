@@ -46,7 +46,7 @@ Stripe webhook / Checkout completion
 
 ## Bank transfer
 
-Bank transfer is planned, not claimed as production-complete in V1.
+Bank transfer support is implemented behind the provider-neutral boundary and has passed a MUFG trial/sandbox acceptance chain. It is still dogfood, not claimed as production-complete.
 
 Initial bank model:
 
@@ -60,7 +60,7 @@ order created
 -> entitlement fulfillment
 ```
 
-Future providers may include MUFG, GMO Aozora, or other banks exposing suitable corporate/open APIs. Each bank gets an adapter; EntitlementStore does not become bank-specific.
+MUFG is the first concrete adapter. Other providers may be added behind the same boundary; EntitlementStore does not become bank-specific.
 
 ### Fail closed
 
@@ -88,35 +88,41 @@ Ambiguous payments go to manual review. They are never auto-granted.
 5. `package_id + payment_ref` remains the entitlement lifecycle identity.
 6. Replay must not resurrect REVOKED or EXPIRED access.
 7. Stripe regression is a release blocker.
-8. Bank support may be advertised only as planned until a real bank sandbox/live acceptance chain is proven.
-9. Manual bank fallback must require an explicit human verification step; it must not accept buyer-submitted screenshots as payment authority by themselves.
-10. Payment provider choice must remain separate from inference payer choice (BYOK/platform credit/etc.).
+8. Bank support may be merged as dogfood only after authenticated provider evidence, exact reconciliation, entitlement issuance, buyer-claim binding, replay protection, and deny/revoke tests pass on the exact revision.
+9. Production bank-transfer claims additionally require a real low-value transfer acceptance run against the intended production contract/configuration.
+10. Manual bank fallback must require an explicit human verification step; it must not accept buyer-submitted screenshots as payment authority by themselves.
+11. Payment provider choice must remain separate from inference payer choice (BYOK/platform credit/etc.).
 
 ## Release slices
 
-### Slice A — implemented in this branch
+### Slice A — implemented
 
 - provider-neutral `VerifiedPaymentEvent`;
 - Stripe verified-result canonicalizer;
 - fail-closed generic bank transfer matcher;
-- unit tests for exact match and rejection cases;
+- durable bank order and transaction-claim stores;
+- browser claim binding so order_ref alone is not a bearer credential;
+- idempotent entitlement fulfillment and replay/revocation protections;
+- unit and integration tests for exact match, rejection, handoff, replay, and revoke behavior;
 - specification and invariants.
 
-### Slice B — next
+### Slice B — MUFG trial acceptance — completed for dogfood
 
-- route existing Stripe fulfillment through the canonical event boundary;
-- add durable order store and provider-event idempotency for bank transfers;
-- add manual-review state machine.
+- concrete MUFG payment-arrivals adapter and pagination;
+- provider-accepted `X-BTMU-Seq-No` shape;
+- authenticated MUFG trial API response;
+- exact known-order reconciliation and entitlement issuance;
+- amount mismatch and currency mismatch fail-closed checks;
+- repeated poll does not duplicate entitlement;
+- full runtime regression suite passes on the accepted revision.
 
-### Slice C — bank acceptance
+### Slice C — production bank acceptance — still required
 
-- implement first concrete bank adapter;
-- preferred development candidate: MUFG if the available account/API contract is usable;
-- alternative/parallel candidate: GMO Aozora for webhook/virtual-account friendly integration;
-- sandbox test;
-- real low-value transfer test;
-- revoke/duplicate/outage/reconciliation adversarial test.
+- configure the intended real bank account/API contract;
+- perform a real low-value transfer test;
+- repeat buyer access, duplicate/replay, revoke/deny, outage, and reconciliation checks against production-shaped configuration;
+- only then mark production readiness or advertise production bank-transfer support.
 
 ## Stop boundary
 
-Do not merge or claim bank-transfer production support until a concrete provider has passed authenticated bank evidence -> exact reconciliation -> entitlement -> buyer access -> revoke/deny acceptance on an exact revision.
+This branch may merge as dogfood after the MUFG trial acceptance and full regression gate pass. Do not mark bank transfer production-ready, enable it as an advertised production capability, or claim live commercial acceptance until Slice C has passed on an exact revision.
