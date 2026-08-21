@@ -1,5 +1,7 @@
 # Payment Adapter V1
 
+> Public export note: this document is a reviewed interface/evidence export. The executable bank-transfer commercial implementation, internal tests, and MUFG dogfood fixture live in the private canonical `WebAI-Bridge-Core`. The accepted private canonical merge revision for this slice is `a99ce8c43d07343857ec7d824ce702c438878153`.
+
 ## /goal
 
 Keep the proven Stripe commercial path working while creating one provider-neutral payment boundary so bank transfer adapters can be added without giving bank APIs direct entitlement authority.
@@ -46,7 +48,7 @@ Stripe webhook / Checkout completion
 
 ## Bank transfer
 
-Bank transfer support is implemented behind the provider-neutral boundary and has passed a MUFG trial/sandbox acceptance chain. It is still dogfood, not claimed as production-complete.
+Bank transfer support is implemented in the private canonical `WebAI-Bridge-Core` and has passed a MUFG trial/sandbox acceptance chain there. It is still dogfood, not claimed as production-complete. This public repository exports the reviewed interface/schema and acceptance evidence; it is not the executable bank-transfer implementation.
 
 Initial bank model:
 
@@ -60,7 +62,7 @@ order created
 -> entitlement fulfillment
 ```
 
-MUFG is the first concrete adapter. Other providers may be added behind the same boundary; EntitlementStore does not become bank-specific.
+MUFG is the first concrete adapter in the private canonical implementation. Other providers may be added behind the same boundary; EntitlementStore does not become bank-specific.
 
 ### Fail closed
 
@@ -88,14 +90,14 @@ Ambiguous payments go to manual review. They are never auto-granted.
 5. `package_id + payment_ref` remains the entitlement lifecycle identity.
 6. Replay must not resurrect REVOKED or EXPIRED access.
 7. Stripe regression is a release blocker.
-8. Bank support may be merged as dogfood only after authenticated provider evidence, exact reconciliation, entitlement issuance, buyer-claim binding, replay protection, and deny/revoke tests pass on the exact revision.
+8. Bank support may be merged as dogfood only after authenticated provider evidence, exact reconciliation, entitlement issuance, buyer-claim binding, replay protection, and deny/revoke tests pass on the exact private canonical revision.
 9. Production bank-transfer claims additionally require a real low-value transfer acceptance run against the intended production contract/configuration.
 10. Manual bank fallback must require an explicit human verification step; it must not accept buyer-submitted screenshots as payment authority by themselves.
 11. Payment provider choice must remain separate from inference payer choice (BYOK/platform credit/etc.).
 
 ## Release slices
 
-### Slice A — implemented
+### Slice A — implemented in private canonical Core
 
 - provider-neutral `VerifiedPaymentEvent`;
 - Stripe verified-result canonicalizer;
@@ -106,7 +108,7 @@ Ambiguous payments go to manual review. They are never auto-granted.
 - unit and integration tests for exact match, rejection, handoff, replay, and revoke behavior;
 - specification and invariants.
 
-### Slice B — MUFG trial acceptance — completed for dogfood
+### Slice B — MUFG trial acceptance — completed for dogfood in private canonical Core
 
 - concrete MUFG payment-arrivals adapter and pagination;
 - provider-accepted `X-BTMU-Seq-No` shape;
@@ -114,7 +116,9 @@ Ambiguous payments go to manual review. They are never auto-granted.
 - exact known-order reconciliation and entitlement issuance;
 - amount mismatch and currency mismatch fail-closed checks;
 - repeated poll does not duplicate entitlement;
-- full runtime regression suite passes on the accepted revision.
+- private overlay regression suite passes on the accepted revision.
+
+Accepted private canonical merge revision: `a99ce8c43d07343857ec7d824ce702c438878153`.
 
 ### Slice C — production bank acceptance — still required
 
@@ -125,4 +129,4 @@ Ambiguous payments go to manual review. They are never auto-granted.
 
 ## Stop boundary
 
-This branch may merge as dogfood after the MUFG trial acceptance and full regression gate pass. Do not mark bank transfer production-ready, enable it as an advertised production capability, or claim live commercial acceptance until Slice C has passed on an exact revision.
+The private canonical Core slice may operate as dogfood after the MUFG trial acceptance and regression gates. This public branch contains only reviewed documentation/schema/evidence export for that capability. Do not mark bank transfer production-ready, enable it as an advertised production capability, or claim live commercial acceptance until Slice C has passed on an exact private canonical revision.
