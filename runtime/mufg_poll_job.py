@@ -46,9 +46,12 @@ class MUFGAccountClient:
             raise ValueError("MUFG account id must be exactly 11 characters")
 
     def _sequence_no(self) -> str:
-        self._counter += 1
-        prefix = datetime.now().strftime("%Y%m%d%H%M%S")
-        value = f"{prefix}{self._counter:011d}"
+        import secrets
+        import string
+
+        prefix = datetime.now().strftime("%Y%m%d")
+        suffix = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(16))
+        value = f"{prefix}-{suffix}"
         if len(value) != 25:
             raise RuntimeError("MUFG sequence number must be exactly 25 characters")
         return value

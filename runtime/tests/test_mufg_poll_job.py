@@ -101,3 +101,14 @@ def test_known_order_wrong_amount_is_rejected_without_fulfilling(tmp_path):
     assert summary.rejected_known_orders == 1
     assert target.orders.get("160300").status == "AWAITING_PAYMENT"
     assert target.entitlements.list_for_package("pkg") == []
+
+
+def test_mufg_sequence_no_matches_provider_shape():
+    import re
+    from mufg_poll_job import MUFGAccountClient
+    client = MUFGAccountClient(api_key="dummy", account_id="77717777777")
+    first = client._sequence_no()
+    second = client._sequence_no()
+    assert len(first) == 25
+    assert re.fullmatch(r"\d{8}-[A-Z0-9]{16}", first)
+    assert first != second
