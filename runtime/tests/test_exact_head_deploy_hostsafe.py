@@ -225,7 +225,7 @@ def test_root_owned_tree_rejects_symlink_when_required(monkeypatch, tmp_path: Pa
         info = original_lstat(self)
         return SimpleNamespace(
             st_uid=0,
-            st_mode=info.st_mode,
+            st_mode=info.st_mode & ~0o022,
         )
 
     monkeypatch.setattr(Path, "lstat", fake_lstat)

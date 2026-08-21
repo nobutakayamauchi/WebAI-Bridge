@@ -26,12 +26,12 @@
           "type": "object",
           "required": ["provider", "setup_mode", "payment_link_url", "binding_verification", "fulfillment", "entitlement_verification"],
           "properties": {
-            "provider": {"enum": ["NONE", "STRIPE_PAYMENT_LINK"]},
+            "provider": {"enum": ["NONE", "STRIPE_PAYMENT_LINK", "BANK_TRANSFER"]},
             "setup_mode": {"enum": ["NONE", "SELF_SETUP", "ASSISTED_SETUP"]},
             "payment_link_url": {"type": "string", "maxLength": 2048},
-            "binding_verification": {"enum": ["NOT_REQUIRED", "CREATOR_ATTESTED", "ASSISTED_PENDING", "MANUAL_REVIEW_REQUIRED", "OPERATOR_REVIEWED", "STRIPE_VERIFIED"]},
-            "fulfillment": {"enum": ["NONE", "MANUAL_HANDOFF", "WEBHOOK_ENTITLEMENT"]},
-            "entitlement_verification": {"enum": ["NOT_REQUIRED", "NOT_IMPLEMENTED", "STRIPE_VERIFIED"]}
+            "binding_verification": {"enum": ["NOT_REQUIRED", "CREATOR_ATTESTED", "ASSISTED_PENDING", "MANUAL_REVIEW_REQUIRED", "OPERATOR_REVIEWED", "STRIPE_VERIFIED", "BANK_VERIFIED"]},
+            "fulfillment": {"enum": ["NONE", "MANUAL_HANDOFF", "WEBHOOK_ENTITLEMENT", "BANK_POLL"]},
+            "entitlement_verification": {"enum": ["NOT_REQUIRED", "NOT_IMPLEMENTED", "STRIPE_VERIFIED", "BANK_VERIFIED"]}
           },
           "additionalProperties": false
         }
