@@ -9,6 +9,8 @@ No Studio or PACKAGE_TEXT-specific routes are added here.
 
 import commercial as base
 from checkout_browser_binding import install_checkout_browser_binding
+from external_entitlement_authority import install_external_entitlement_routes
 
 install_checkout_browser_binding(base)
+EXTERNAL_ENTITLEMENT_AUTHORITY = install_external_entitlement_routes(base)
 app = base.app
