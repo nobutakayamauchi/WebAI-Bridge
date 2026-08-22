@@ -34,7 +34,7 @@ def gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_AI_STRIPE_SECRET_KEY", "rk_test_handoff")
     for name in [
         "commercial_handoff", "commercial", "app", "entitlements", "handoff_tickets",
-        "cost_router", "checkout_binding", "checkout_browser_binding",
+        "cost_router", "checkout_binding", "checkout_browser_binding", "paid_page_guard",
     ]:
         sys.modules.pop(name, None)
     module = importlib.import_module("commercial_handoff")
@@ -100,6 +100,7 @@ def test_checkout_can_transfer_once_from_embedded_browser_to_safari_without_auth
     assert activated.status_code == 303
     assert module.base.entitlement_cookie_name(SLUG) in activated.headers.get("set-cookie", "")
     assert "ticket=" not in activated.headers.get("location", "")
+    assert safari.get(f"/a/{SLUG}").status_code == 200
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 200
 
     assert embedded.post(activate_url, data={"ticket": transfer_code}, follow_redirects=False).status_code == 409
@@ -107,6 +108,9 @@ def test_checkout_can_transfer_once_from_embedded_browser_to_safari_without_auth
     # the same valid Stripe session id is denied before checkout-claim lookup.
     assert embedded.get(f"/checkout/complete/{SLUG}?session_id={SESSION_ID}", follow_redirects=False).status_code == 403
     assert module.base.entitlements.revoke_payment(package_id=SLUG, payment_ref=PAYMENT_REF) == 1
+    # Reality regression: a signed browser cookie is a reference, not durable
+    # authority. The paid page must re-check current payment state on every load.
+    assert safari.get(f"/a/{SLUG}").status_code == 403
     assert safari.get(f"/apps/{SLUG}/public-config").status_code == 401
 
 
