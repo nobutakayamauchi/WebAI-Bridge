@@ -65,6 +65,12 @@ class ExternalEntitlementAuthority:
         self._resolve_package = package_resolver
         self._validate_package = package_validator
 
+    def _existing_record(self, *, package_id: str, external_ref: str) -> dict | None:
+        for row in self._entitlements.list_for_package(package_id):
+            if row.get("payment_ref") == external_ref:
+                return row
+        return None
+
     def grant(self, *, package_id: str, buyer_reference: str, order_reference: str) -> ExternalGrantResult:
         app_config = self._resolve_package(package_id)
         self._validate_package(app_config)
@@ -80,6 +86,9 @@ class ExternalEntitlementAuthority:
             package_id=package_id,
             payment_ref=external_ref,
         )
+        existing = self._existing_record(package_id=package_id, external_ref=external_ref)
+        if existing is not None and existing.get("buyer_ref") != buyer_reference:
+            raise ValueError("order reference is already bound to a different buyer")
         if state == PAYMENT_ACTIVE:
             return ExternalGrantResult(external_ref, PAYMENT_ACTIVE, True)
         if state in {PAYMENT_REVOKED, PAYMENT_EXPIRED}:
@@ -90,11 +99,27 @@ class ExternalEntitlementAuthority:
         # The returned legacy bearer token is intentionally discarded. External
         # callers receive only a non-secret durable reference; WebAI remains the
         # authority that later creates browser access through its own handoff.
-        self._entitlements.issue(
-            package_id=package_id,
-            buyer_ref=buyer_reference,
-            payment_ref=external_ref,
-        )
+        try:
+            self._entitlements.issue(
+                package_id=package_id,
+                buyer_ref=buyer_reference,
+                payment_ref=external_ref,
+            )
+        except ValueError:
+            # Counter-DA: concurrent webhook retries can both observe MISSING.
+            # The store's unique active payment constraint is the final arbiter.
+            state = self._entitlements.payment_state(
+                package_id=package_id,
+                payment_ref=external_ref,
+            )
+            existing = self._existing_record(package_id=package_id, external_ref=external_ref)
+            if (
+                state == PAYMENT_ACTIVE
+                and existing is not None
+                and existing.get("buyer_ref") == buyer_reference
+            ):
+                return ExternalGrantResult(external_ref, PAYMENT_ACTIVE, True)
+            raise
         return ExternalGrantResult(external_ref, PAYMENT_ACTIVE, False)
 
     def revoke(self, *, external_entitlement_ref: str, reason: str) -> ExternalGrantResult:
