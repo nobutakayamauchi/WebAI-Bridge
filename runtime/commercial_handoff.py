@@ -6,6 +6,7 @@ from __future__ import annotations
 import commercial as base
 from checkout_browser_binding import install_checkout_browser_binding
 from creator_auth import install_creator_auth
+from external_entitlement_authority import install_external_entitlement_routes
 from knowledge_artifact import validate_package_text_artifact
 from knowledge_studio import install_knowledge_studio_routes
 from package_knowledge import chat_with_package_text
@@ -42,4 +43,5 @@ base.core.chat = _knowledge_chat
 install_checkout_browser_binding(base)
 install_knowledge_studio_routes(base)
 CREATOR_AUTH = install_creator_auth(base)
+EXTERNAL_ENTITLEMENT_AUTHORITY = install_external_entitlement_routes(base)
 app = base.app
