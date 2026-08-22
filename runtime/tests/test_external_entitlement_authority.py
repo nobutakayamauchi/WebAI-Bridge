@@ -27,9 +27,11 @@ def _active_package(slug: str) -> dict:
     }
 
 
-def test_external_reference_round_trip():
+def test_external_reference_hides_order_reference_and_keeps_package_binding():
     ref = build_external_entitlement_ref(package_id="paid-ai", order_reference="order/123:abc")
-    assert parse_external_entitlement_ref(ref) == ("paid-ai", "order/123:abc")
+    package_id, digest = parse_external_entitlement_ref(ref)
+    assert package_id == "paid-ai"
+    assert len(digest) == 64
     assert "order/123:abc" not in ref
 
 
@@ -58,6 +60,17 @@ def test_grant_is_idempotent_and_revoke_is_terminal(tmp_path):
     )
     assert second.external_entitlement_ref == first.external_entitlement_ref
     assert second.idempotent is True
+
+    try:
+        authority.grant(
+            package_id="paid-ai",
+            buyer_reference="different-buyer",
+            order_reference="order-1",
+        )
+    except ValueError as exc:
+        assert "different buyer" in str(exc)
+    else:
+        raise AssertionError("same external order must not be rebound to another buyer")
 
     revoked = authority.revoke(
         external_entitlement_ref=first.external_entitlement_ref,
