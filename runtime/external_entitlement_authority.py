@@ -195,6 +195,37 @@ def install_external_entitlement_routes(base):
             "idempotent": result.idempotent,
         }
 
+    @base.app.post("/api/internal/entitlements/{external_entitlement_ref}/handoff")
+    def external_handoff(
+        external_entitlement_ref: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_service(authorization)
+        try:
+            package_id, _digest = parse_external_entitlement_ref(external_entitlement_ref)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        state = base.entitlements.payment_state(
+            package_id=package_id,
+            payment_ref=external_entitlement_ref,
+        )
+        if state == PAYMENT_MISSING:
+            raise HTTPException(status_code=404, detail="unknown external entitlement")
+        if state != PAYMENT_ACTIVE:
+            raise HTTPException(status_code=409, detail="external entitlement is not active")
+        # Existing WebAI HandoffTicketStore remains the browser-authority source.
+        # The ticket is returned in the response body only and must never be put
+        # into a query string by SDN.
+        ticket = base.handoffs.issue(
+            package_id=package_id,
+            payment_ref=external_entitlement_ref,
+        )
+        return {
+            "package_id": package_id,
+            "handoff_code": ticket,
+            "activation_path": f"/checkout/activate/{package_id}",
+        }
+
     @base.app.post("/api/internal/entitlements/{external_entitlement_ref}/revoke")
     def external_revoke(
         external_entitlement_ref: str,
