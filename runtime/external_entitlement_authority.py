@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import secrets
 from dataclasses import dataclass
@@ -26,24 +27,27 @@ def _unb64(value: str) -> str:
 def build_external_entitlement_ref(*, package_id: str, order_reference: str) -> str:
     if not package_id or not order_reference:
         raise ValueError("package_id and order_reference are required")
-    return f"{REF_PREFIX}.{_b64(package_id)}.{_b64(order_reference)}"
+    digest = hashlib.sha256(
+        f"sdn-v1\0{package_id}\0{order_reference}".encode("utf-8")
+    ).hexdigest()
+    return f"{REF_PREFIX}.{_b64(package_id)}.{digest}"
 
 
 def parse_external_entitlement_ref(reference: str) -> tuple[str, str]:
     try:
-        prefix, package_part, order_part = reference.split(".", 2)
+        prefix, package_part, digest = reference.split(".", 2)
     except ValueError as exc:
         raise ValueError("invalid external entitlement reference") from exc
-    if prefix != REF_PREFIX:
+    if prefix != REF_PREFIX or len(digest) != 64:
         raise ValueError("invalid external entitlement reference")
     try:
         package_id = _unb64(package_part)
-        order_reference = _unb64(order_part)
+        int(digest, 16)
     except Exception as exc:  # malformed external identifier, never secret authority
         raise ValueError("invalid external entitlement reference") from exc
-    if not package_id or not order_reference:
+    if not package_id:
         raise ValueError("invalid external entitlement reference")
-    return package_id, order_reference
+    return package_id, digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +129,7 @@ class ExternalEntitlementAuthority:
     def revoke(self, *, external_entitlement_ref: str, reason: str) -> ExternalGrantResult:
         if not reason.strip():
             raise ValueError("revoke reason is required")
-        package_id, _order_reference = parse_external_entitlement_ref(external_entitlement_ref)
+        package_id, _digest = parse_external_entitlement_ref(external_entitlement_ref)
         state = self._entitlements.payment_state(
             package_id=package_id,
             payment_ref=external_entitlement_ref,
