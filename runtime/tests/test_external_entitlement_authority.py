@@ -12,6 +12,7 @@ from external_entitlement_authority import (
     install_external_entitlement_routes,
     parse_external_entitlement_ref,
 )
+from handoff_tickets import HandoffTicketStore
 
 
 def _active_package(slug: str) -> dict:
@@ -99,23 +100,30 @@ def test_grant_is_idempotent_and_revoke_is_terminal(tmp_path):
         raise AssertionError("revoked external entitlement must never be resurrected")
 
 
-def test_http_routes_fail_closed_and_require_service_bearer(tmp_path, monkeypatch):
-    monkeypatch.setenv("WEB_AI_EXTERNAL_ENTITLEMENT_SERVICE_TOKEN", "s" * 48)
+def _route_base(tmp_path, package):
     store = EntitlementStore(tmp_path / "entitlements.sqlite3")
-    package = _active_package("paid-ai")
+    handoffs = HandoffTicketStore(tmp_path / "handoff.sqlite3", ttl_seconds=600)
 
     class Registry:
         def get(self, slug: str):
-            if slug != "paid-ai":
+            if slug != package["slug"]:
                 raise KeyError(slug)
             return package
 
     base = SimpleNamespace(
         app=FastAPI(),
         entitlements=store,
+        handoffs=handoffs,
         core=SimpleNamespace(registry=Registry()),
         ensure_commercial_hosted_runnable=lambda config: None,
     )
+    return base, store, handoffs
+
+
+def test_http_routes_fail_closed_and_issue_body_only_handoff(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEB_AI_EXTERNAL_ENTITLEMENT_SERVICE_TOKEN", "s" * 48)
+    package = _active_package("paid-ai")
+    base, store, handoffs = _route_base(tmp_path, package)
     install_external_entitlement_routes(base)
     client = TestClient(base.app)
 
@@ -135,6 +143,17 @@ def test_http_routes_fail_closed_and_require_service_bearer(tmp_path, monkeypatc
     ref = granted.json()["external_entitlement_ref"]
     assert granted.json()["status"] == PAYMENT_ACTIVE
 
+    handoff = client.post(
+        f"/api/internal/entitlements/{ref}/handoff",
+        headers=headers,
+    )
+    assert handoff.status_code == 200
+    payload = handoff.json()
+    assert payload["package_id"] == "paid-ai"
+    assert payload["handoff_code"].startswith("handoff_")
+    assert "handoff_" not in payload["activation_path"]
+    assert handoffs.consume(package_id="paid-ai", ticket=payload["handoff_code"]) == ref
+
     revoked = client.post(
         f"/api/internal/entitlements/{ref}/revoke",
         headers=headers,
@@ -143,16 +162,17 @@ def test_http_routes_fail_closed_and_require_service_bearer(tmp_path, monkeypatc
     assert revoked.status_code == 200
     assert revoked.json()["status"] == PAYMENT_REVOKED
 
+    handoff_after_revoke = client.post(
+        f"/api/internal/entitlements/{ref}/handoff",
+        headers=headers,
+    )
+    assert handoff_after_revoke.status_code == 409
+
 
 def test_http_routes_are_503_when_service_authority_not_configured(tmp_path, monkeypatch):
     monkeypatch.delenv("WEB_AI_EXTERNAL_ENTITLEMENT_SERVICE_TOKEN", raising=False)
-    store = EntitlementStore(tmp_path / "entitlements.sqlite3")
-    base = SimpleNamespace(
-        app=FastAPI(),
-        entitlements=store,
-        core=SimpleNamespace(registry=SimpleNamespace(get=lambda slug: _active_package(slug))),
-        ensure_commercial_hosted_runnable=lambda config: None,
-    )
+    package = _active_package("paid-ai")
+    base, _store, _handoffs = _route_base(tmp_path, package)
     install_external_entitlement_routes(base)
     client = TestClient(base.app)
     response = client.post(
