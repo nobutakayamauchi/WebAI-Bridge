@@ -1,3 +1,5 @@
+> Historical design note. This document describes an earlier implementation stage; its unimplemented-feature statements are not a current release checklist. For current status and the limits of historical real-world validation, see [README](../README.md) and [Hosted v1 status](GOAL_HOSTED_V1_PRODUCTION_STUDIO.md).
+
 # Distribution Security / Copy-Control Boundary
 
 Date: 2026-08-16
